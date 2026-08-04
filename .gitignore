@@ -1,0 +1,14 @@
+node_modules/
+dist/
+target/
+src-tauri/target/
+src-tauri/worker/target-*/
+src-tauri/binaries/*.exe
+src-tauri/resources/models/*.bin
+src-tauri/icons/
+artifacts/
+work/
+.secrets/
+.env
+*.log
+*.pdb

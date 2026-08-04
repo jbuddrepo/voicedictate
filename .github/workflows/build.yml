@@ -1,0 +1,48 @@
+name: Build and release
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: "src-tauri -> target; src-tauri/worker -> target-baseline; src-tauri/worker -> target-avx2" }
+      - run: pnpm install --frozen-lockfile
+      - name: Install libclang runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force work/libclang | Out-Null
+          Invoke-WebRequest https://api.nuget.org/v3-flatcontainer/libclang.runtime.win-x64/21.1.8/libclang.runtime.win-x64.21.1.8.nupkg -OutFile work/libclang.nupkg
+          tar -xf work/libclang.nupkg -C work/libclang
+      - run: ./scripts/fetch-models.ps1
+        shell: pwsh
+      - name: Build and test
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ startsWith(github.ref, 'refs/tags/') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: |
+          ./scripts/build.ps1 -Configuration Release
+          cargo test --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/worker/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VoiceDictate-Windows-x64
+          path: artifacts/*
+      - name: Publish GitHub prerelease
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          files: |
+            artifacts/*
