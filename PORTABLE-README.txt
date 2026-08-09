@@ -1,4 +1,4 @@
-VoiceDictate Portable 0.1.0 Beta
+VoiceDictate Portable 0.1.1 Beta
 
 1. Extract the entire ZIP to a folder.
 2. Keep VoiceDictate.exe, both worker executables, and the resources folder together.

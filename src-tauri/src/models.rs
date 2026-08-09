@@ -66,4 +66,6 @@ pub struct WorkerResponse {
     pub _inference_ms: u64,
     #[serde(rename = "language")]
     pub _language: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
 }

@@ -1,60 +1,153 @@
-use std::{path::PathBuf, time::Instant};
+use std::{
+    io::{self, BufRead, Write},
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 #[derive(Parser)]
 struct Arguments {
-    #[arg(long)] model: PathBuf,
-    #[arg(long)] audio: PathBuf,
-    #[arg(long, default_value = "auto")] language: String,
-    #[arg(long)] threads: Option<i32>,
+    #[arg(long)]
+    model: PathBuf,
+    #[arg(long)]
+    threads: Option<i32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Request {
+    audio: PathBuf,
+    language: String,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Response { text: String, inference_ms: u64, language: Option<String> }
+struct Response {
+    text: String,
+    inference_ms: u64,
+    language: Option<String>,
+    error: Option<String>,
+}
 
 fn main() {
-    if let Err(error) = run() { eprintln!("{error:#}"); std::process::exit(1); }
+    if let Err(error) = run() {
+        eprintln!("{error:#}");
+        std::process::exit(1);
+    }
 }
 
 fn run() -> Result<()> {
     let arguments = Arguments::parse();
-    let samples = read_wav(&arguments.audio)?;
+    let context = WhisperContext::new_with_params(
+        arguments.model.to_string_lossy().as_ref(),
+        WhisperContextParameters::default(),
+    )
+    .context("Could not load the Whisper model")?;
+    let threads = arguments.threads.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|value| value.get().min(4) as i32)
+            .unwrap_or(2)
+    });
+    let stdin = io::stdin();
+    let mut stdout = io::stdout().lock();
+    for line in stdin.lock().lines() {
+        let response = match line {
+            Ok(line) => match serde_json::from_str::<Request>(&line) {
+                Ok(request) => {
+                    match transcribe(&context, &request.audio, &request.language, threads) {
+                        Ok(response) => response,
+                        Err(error) => Response {
+                            text: String::new(),
+                            inference_ms: 0,
+                            language: None,
+                            error: Some(format!("{error:#}")),
+                        },
+                    }
+                }
+                Err(error) => Response {
+                    text: String::new(),
+                    inference_ms: 0,
+                    language: None,
+                    error: Some(format!("Invalid worker request: {error}")),
+                },
+            },
+            Err(error) => return Err(error.into()),
+        };
+        serde_json::to_writer(&mut stdout, &response)?;
+        stdout.write_all(b"\n")?;
+        stdout.flush()?;
+    }
+    Ok(())
+}
+
+fn transcribe(
+    context: &WhisperContext,
+    audio: &Path,
+    language: &str,
+    threads: i32,
+) -> Result<Response> {
+    let samples = read_wav(audio)?;
     let started = Instant::now();
-    let context = WhisperContext::new_with_params(arguments.model.to_string_lossy().as_ref(), WhisperContextParameters::default()).context("Could not load the Whisper model")?;
-    let mut state = context.create_state().context("Could not create a Whisper inference state")?;
+    let mut state = context
+        .create_state()
+        .context("Could not create a Whisper inference state")?;
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_n_threads(arguments.threads.unwrap_or_else(|| std::thread::available_parallelism().map(|value| value.get().min(4) as i32).unwrap_or(2)));
+    params.set_n_threads(threads);
     params.set_translate(false);
     params.set_no_context(true);
     // Whisper's default encoder window is 30 seconds. Matching it to short
     // dictations avoids doing a full 30-second pass on older CPUs.
-    let audio_ctx = (((samples.len() as f64 / 16_000.0) * 50.0).ceil() as i32 + 50).clamp(150, 1500);
+    let audio_ctx =
+        (((samples.len() as f64 / 16_000.0) * 50.0).ceil() as i32 + 50).clamp(150, 1500);
     params.set_audio_ctx(audio_ctx);
     params.set_single_segment(false);
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_special(false);
-    if arguments.language != "auto" { params.set_language(Some(&arguments.language)); }
-    state.full(params, &samples).context("Whisper inference failed")?;
-    let count = state.full_n_segments().context("Could not read Whisper segments")?;
+    if language != "auto" {
+        params.set_language(Some(language));
+    }
+    state
+        .full(params, &samples)
+        .context("Whisper inference failed")?;
+    let count = state
+        .full_n_segments()
+        .context("Could not read Whisper segments")?;
     let mut text = String::new();
-    for index in 0..count { text.push_str(&state.full_get_segment_text(index).context("Could not read a Whisper segment")?); }
-    let language = state.full_lang_id_from_state().ok().and_then(|id| whisper_rs::get_lang_str(id).map(str::to_string));
-    println!("{}", serde_json::to_string(&Response { text: text.trim().to_string(), inference_ms: started.elapsed().as_millis() as u64, language })?);
-    Ok(())
+    for index in 0..count {
+        text.push_str(
+            &state
+                .full_get_segment_text(index)
+                .context("Could not read a Whisper segment")?,
+        );
+    }
+    let language = state
+        .full_lang_id_from_state()
+        .ok()
+        .and_then(|id| whisper_rs::get_lang_str(id).map(str::to_string));
+    Ok(Response {
+        text: text.trim().to_string(),
+        inference_ms: started.elapsed().as_millis() as u64,
+        language,
+        error: None,
+    })
 }
 
-fn read_wav(path: &PathBuf) -> Result<Vec<f32>> {
+fn read_wav(path: &Path) -> Result<Vec<f32>> {
     let mut reader = hound::WavReader::open(path).context("Could not open the recorded audio")?;
     let spec = reader.spec();
-    if spec.channels != 1 || spec.sample_rate != 16_000 { bail!("The worker requires 16 kHz mono audio"); }
+    if spec.channels != 1 || spec.sample_rate != 16_000 {
+        bail!("The worker requires 16 kHz mono audio");
+    }
     let samples = match spec.sample_format {
-        hound::SampleFormat::Int => reader.samples::<i16>().map(|sample| sample.map(|value| value as f32 / i16::MAX as f32)).collect::<Result<Vec<_>, _>>()?,
+        hound::SampleFormat::Int => reader
+            .samples::<i16>()
+            .map(|sample| sample.map(|value| value as f32 / i16::MAX as f32))
+            .collect::<Result<Vec<_>, _>>()?,
         hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<Vec<_>, _>>()?,
     };
     Ok(samples)
