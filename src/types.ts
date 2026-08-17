@@ -1,11 +1,19 @@
 export type AppStatus = "idle" | "listening" | "transcribing" | "cleaning" | "success" | "error";
 export type ProviderKind = "none" | "ollama" | "openai-compatible";
+export type TranscriptionMode = "local" | "remote" | "automatic";
+export type TranscriptionProviderKind = "whisper-cpp" | "openai-compatible";
 
 export interface AppSettings {
   shortcut: string;
   microphoneName: string | null;
   language: string;
   model: "tiny" | "base";
+  transcriptionMode: TranscriptionMode;
+  transcriptionProvider: TranscriptionProviderKind;
+  transcriptionBaseUrl: string;
+  transcriptionModel: string;
+  transcriptionTimeoutSeconds: number;
+  transcriptionApiKeyConfigured: boolean;
   cleanupEnabled: boolean;
   provider: ProviderKind;
   providerBaseUrl: string;

@@ -6,6 +6,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $tauriRoot = Join-Path $projectRoot 'src-tauri'
 $workerRoot = Join-Path $tauriRoot 'worker'
 $cargoProfile = if ($Configuration -eq 'Release') { 'release' } else { 'debug' }
+$appVersion = (Get-Content -Raw -LiteralPath (Join-Path $projectRoot 'package.json') | ConvertFrom-Json).version
 
 Push-Location $projectRoot
 try {
@@ -68,23 +69,25 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'The Tauri application build failed.' }
 
         $artifactDirectory = Join-Path $projectRoot 'artifacts'
-        $portableDirectory = Join-Path $artifactDirectory 'VoiceDictate-Portable-0.1.1'
+        $portableDirectory = Join-Path $artifactDirectory "VoiceDictate-Portable-$appVersion"
         New-Item -ItemType Directory -Force -Path (Join-Path $portableDirectory 'resources\models') | Out-Null
-        $installer = Get-ChildItem -LiteralPath (Join-Path $tauriRoot 'target\release\bundle\nsis') -Filter '*0.1.1*setup.exe' | Select-Object -First 1
+        $installer = Get-ChildItem -LiteralPath (Join-Path $tauriRoot 'target\release\bundle\nsis') -Filter "*$appVersion*setup.exe" | Select-Object -First 1
         if (-not $installer) { throw 'The NSIS installer was not produced.' }
-        Copy-Item -LiteralPath $installer.FullName -Destination (Join-Path $artifactDirectory 'VoiceDictate-Setup-0.1.1.exe') -Force
+        Copy-Item -LiteralPath $installer.FullName -Destination (Join-Path $artifactDirectory "VoiceDictate-Setup-$appVersion.exe") -Force
         $updaterSignature = "$($installer.FullName).sig"
         if (Test-Path -LiteralPath $updaterSignature) {
-            Copy-Item -LiteralPath $updaterSignature -Destination (Join-Path $artifactDirectory 'VoiceDictate-Setup-0.1.1.exe.sig') -Force
+            Copy-Item -LiteralPath $updaterSignature -Destination (Join-Path $artifactDirectory "VoiceDictate-Setup-$appVersion.exe.sig") -Force
         }
         Copy-Item -LiteralPath (Join-Path $tauriRoot 'target\release\voicedictate.exe') -Destination (Join-Path $portableDirectory 'VoiceDictate.exe') -Force
         Copy-Item -LiteralPath (Join-Path $binaryDirectory "voicedictate-worker-$targetTriple.exe") -Destination (Join-Path $portableDirectory 'voicedictate-worker.exe') -Force
         Copy-Item -LiteralPath (Join-Path $binaryDirectory "voicedictate-worker-avx2-$targetTriple.exe") -Destination (Join-Path $portableDirectory 'voicedictate-worker-avx2.exe') -Force
         Copy-Item -LiteralPath (Join-Path $tauriRoot 'resources\models\ggml-tiny.bin') -Destination (Join-Path $portableDirectory 'resources\models\ggml-tiny.bin') -Force
         Copy-Item -LiteralPath (Join-Path $projectRoot 'PRIVACY.md') -Destination $portableDirectory -Force
+        Copy-Item -LiteralPath (Join-Path $projectRoot 'REMOTE-TRANSCRIPTION.md') -Destination $portableDirectory -Force
+        Copy-Item -LiteralPath (Join-Path $projectRoot 'BUILDING.md') -Destination $portableDirectory -Force
         Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD-PARTY-NOTICES.md') -Destination $portableDirectory -Force
         Copy-Item -LiteralPath (Join-Path $projectRoot 'PORTABLE-README.txt') -Destination $portableDirectory -Force
-        Compress-Archive -Path "$portableDirectory\*" -DestinationPath (Join-Path $artifactDirectory 'VoiceDictate-Portable-0.1.1.zip') -Force
+        Compress-Archive -Path "$portableDirectory\*" -DestinationPath (Join-Path $artifactDirectory "VoiceDictate-Portable-$appVersion.zip") -Force
 
         Get-ChildItem -LiteralPath $artifactDirectory -File | Where-Object Name -ne 'SHA256SUMS.txt' | ForEach-Object {
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()

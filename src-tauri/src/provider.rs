@@ -7,7 +7,7 @@ use url::Url;
 
 use crate::models::AppSettings;
 
-fn validate_url(raw: &str) -> Result<Url> {
+pub(crate) fn validate_url(raw: &str) -> Result<Url> {
     let parsed = Url::parse(raw).context("The provider URL is invalid")?;
     if parsed.scheme() == "https" {
         return Ok(parsed);
@@ -41,9 +41,10 @@ fn validate_url(raw: &str) -> Result<Url> {
     Ok(parsed)
 }
 
-fn client(timeout_seconds: u64) -> Result<Client> {
+pub(crate) fn client(timeout_seconds: u64) -> Result<Client> {
     Ok(Client::builder()
         .timeout(Duration::from_secs(timeout_seconds))
+        .redirect(reqwest::redirect::Policy::none())
         .build()?)
 }
 

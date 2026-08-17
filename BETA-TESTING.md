@@ -36,5 +36,9 @@ Interactive UI automation could not continue because Windows had an unrelated CM
 - [ ] Cancel, rapid reactivation, sleep, and lock/unlock
 - [ ] Search and completely clear text-only history
 - [ ] Confirm no audio files remain after success or failure
-- [ ] Confirm no network traffic when cleanup is disabled
+- [ ] Confirm no network traffic when transcription is Local and cleanup is disabled
+- [ ] Test a whisper.cpp server over LAN or Tailscale
+- [ ] Test an OpenAI-compatible `/v1/audio/transcriptions` provider
+- [ ] Disconnect the remote server and confirm Automatic mode uses local Whisper
+- [ ] Confirm Remote mode reports an actionable error instead of silently sending elsewhere
 - [ ] Fresh-machine installer and portable ZIP smoke tests

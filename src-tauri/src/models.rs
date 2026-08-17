@@ -2,6 +2,18 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_CLEANUP_PROMPT: &str = "Polish the dictated text. Remove filler words and accidental repetition, and fix punctuation and grammar. Preserve the exact meaning, language, names, URLs, numbers, and code. Return only the final text with no commentary.";
 
+fn default_transcription_mode() -> String {
+    "local".into()
+}
+
+fn default_transcription_provider() -> String {
+    "whisper-cpp".into()
+}
+
+fn default_transcription_timeout_seconds() -> u64 {
+    90
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -9,6 +21,18 @@ pub struct AppSettings {
     pub microphone_name: Option<String>,
     pub language: String,
     pub model: String,
+    #[serde(default = "default_transcription_mode")]
+    pub transcription_mode: String,
+    #[serde(default = "default_transcription_provider")]
+    pub transcription_provider: String,
+    #[serde(default)]
+    pub transcription_base_url: String,
+    #[serde(default)]
+    pub transcription_model: String,
+    #[serde(default = "default_transcription_timeout_seconds")]
+    pub transcription_timeout_seconds: u64,
+    #[serde(default, skip_deserializing)]
+    pub transcription_api_key_configured: bool,
     pub cleanup_enabled: bool,
     pub provider: String,
     pub provider_base_url: String,
@@ -26,6 +50,12 @@ impl Default for AppSettings {
             microphone_name: None,
             language: "auto".into(),
             model: "tiny".into(),
+            transcription_mode: default_transcription_mode(),
+            transcription_provider: default_transcription_provider(),
+            transcription_base_url: String::new(),
+            transcription_model: String::new(),
+            transcription_timeout_seconds: default_transcription_timeout_seconds(),
+            transcription_api_key_configured: false,
             cleanup_enabled: false,
             provider: "none".into(),
             provider_base_url: "http://127.0.0.1:11434".into(),
@@ -68,4 +98,29 @@ pub struct WorkerResponse {
     pub _language: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppSettings;
+
+    #[test]
+    fn older_settings_default_to_local_transcription() {
+        let old = r#"{
+          "shortcut":"Ctrl+Alt+Space",
+          "microphoneName":null,
+          "language":"auto",
+          "model":"tiny",
+          "cleanupEnabled":false,
+          "provider":"none",
+          "providerBaseUrl":"http://127.0.0.1:11434",
+          "providerModel":"",
+          "cleanupPrompt":"test",
+          "launchAtStartup":false
+        }"#;
+        let settings: AppSettings = serde_json::from_str(old).expect("old settings should migrate");
+        assert_eq!(settings.transcription_mode, "local");
+        assert_eq!(settings.transcription_provider, "whisper-cpp");
+        assert_eq!(settings.transcription_timeout_seconds, 90);
+    }
 }

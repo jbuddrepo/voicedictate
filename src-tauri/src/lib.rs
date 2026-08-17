@@ -2,6 +2,7 @@ mod audio;
 mod models;
 mod provider;
 mod storage;
+mod transcription;
 mod windows_text;
 mod worker;
 
@@ -35,11 +36,30 @@ struct AppState {
     worker: Mutex<WorkerManager>,
 }
 
+struct TemporaryAudio(PathBuf);
+
+impl Drop for TemporaryAudio {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 fn keyring_entry() -> Result<Entry> {
     Entry::new("VoiceDictate", "provider-api-key").map_err(Into::into)
 }
+
+fn transcription_keyring_entry() -> Result<Entry> {
+    Entry::new("VoiceDictate", "transcription-api-key").map_err(Into::into)
+}
+
 fn api_key() -> Option<String> {
     keyring_entry()
+        .ok()
+        .and_then(|entry| entry.get_password().ok())
+}
+
+fn transcription_api_key() -> Option<String> {
+    transcription_keyring_entry()
         .ok()
         .and_then(|entry| entry.get_password().ok())
 }
@@ -52,6 +72,7 @@ fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
         .map_err(|_| "Settings are unavailable")?
         .clone();
     value.provider_api_key_configured = api_key().is_some();
+    value.transcription_api_key_configured = transcription_api_key().is_some();
     Ok(value)
 }
 
@@ -68,6 +89,21 @@ fn save_settings(settings: AppSettings, state: State<'_, AppState>) -> Result<()
 #[tauri::command]
 fn set_provider_api_key(api_key: String) -> Result<(), String> {
     let entry = keyring_entry().map_err(|error| error.to_string())?;
+    if api_key.is_empty() {
+        entry
+            .delete_credential()
+            .or_else(|_| Ok(()))
+            .map_err(|error: keyring::Error| error.to_string())
+    } else {
+        entry
+            .set_password(&api_key)
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+fn set_transcription_api_key(api_key: String) -> Result<(), String> {
+    let entry = transcription_keyring_entry().map_err(|error| error.to_string())?;
     if api_key.is_empty() {
         entry
             .delete_credential()
@@ -123,25 +159,35 @@ async fn stop_and_process(
         .map_err(|error| error.to_string())?;
     fs::create_dir_all(&state.temp_dir).map_err(|error| error.to_string())?;
     let wav_path = state.temp_dir.join(format!("{}.wav", Uuid::new_v4()));
-    write_wav(&wav_path, &recording.samples).map_err(|error| error.to_string())?;
+    let temporary_audio = TemporaryAudio(wav_path);
+    write_wav(&temporary_audio.0, &recording.samples).map_err(|error| error.to_string())?;
     let settings = state
         .settings
         .lock()
         .map_err(|_| "Settings are unavailable")?
         .clone();
-    let worker_path = locate_worker(&app).map_err(|error| error.to_string())?;
-    let model_path = locate_model(&app, &settings.model).map_err(|error| error.to_string())?;
-    let key = api_key();
+    let local_paths = if settings.transcription_mode == "remote" {
+        None
+    } else {
+        Some((
+            locate_worker(&app).map_err(|error| error.to_string())?,
+            locate_model(&app, &settings.model).map_err(|error| error.to_string())?,
+        ))
+    };
+    let cleanup_key = api_key();
+    let remote_key = transcription_api_key();
     let app_for_task = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let state = app_for_task.state::<AppState>();
         process_recording(
             &state.worker,
-            &worker_path,
-            &model_path,
-            &wav_path,
+            local_paths
+                .as_ref()
+                .map(|(worker, model)| (worker.as_path(), model.as_path())),
+            &temporary_audio.0,
             &settings,
-            key.as_deref(),
+            cleanup_key.as_deref(),
+            remote_key.as_deref(),
         )
     })
     .await
@@ -166,42 +212,59 @@ async fn stop_and_process(
 
 fn process_recording(
     worker_manager: &Mutex<WorkerManager>,
-    worker: &Path,
-    model: &Path,
+    local_paths: Option<(&Path, &Path)>,
     wav: &Path,
     settings: &AppSettings,
-    key: Option<&str>,
+    cleanup_key: Option<&str>,
+    remote_key: Option<&str>,
 ) -> Result<DictationResult> {
-    struct RemoveOnDrop<'a>(&'a Path);
-    impl Drop for RemoveOnDrop<'_> {
-        fn drop(&mut self) {
-            let _ = fs::remove_file(self.0);
-        }
-    }
-    let _remove_audio = RemoveOnDrop(wav);
-    let response = worker_manager
-        .lock()
-        .map_err(|_| anyhow!("The transcription worker is unavailable"))?
-        .transcribe(worker, model, wav, &settings.language)?;
-    let raw = response.text.trim().to_string();
+    let local_transcription = || -> Result<String> {
+        let (worker, model) = local_paths
+            .ok_or_else(|| anyhow!("Local Whisper is unavailable for automatic fallback"))?;
+        let response = worker_manager
+            .lock()
+            .map_err(|_| anyhow!("The transcription worker is unavailable"))?
+            .transcribe(worker, model, wav, &settings.language)?;
+        Ok(response.text.trim().to_string())
+    };
+
+    let (raw, transcription_warning) = match settings.transcription_mode.as_str() {
+        "local" => (local_transcription()?, None),
+        "remote" => (transcription::transcribe(settings, remote_key, wav)?, None),
+        "automatic" => match transcription::transcribe(settings, remote_key, wav) {
+            Ok(text) => (text, None),
+            Err(error) => (
+                local_transcription()?,
+                Some(format!(
+                    "Remote transcription failed; local Whisper was used: {error}"
+                )),
+            ),
+        },
+        _ => return Err(anyhow!("The selected transcription mode is unsupported")),
+    };
     if raw.is_empty() {
         return Err(anyhow!("No speech was detected"));
     }
     if settings.cleanup_enabled && settings.provider != "none" {
-        match provider::clean_text(settings, key, &raw) {
+        match provider::clean_text(settings, cleanup_key, &raw) {
             Ok(cleaned) => Ok(DictationResult {
                 raw_text: raw,
                 final_text: cleaned,
                 duration_ms: 0,
                 processing_mode: "clean".into(),
-                warning: None,
+                warning: transcription_warning,
             }),
             Err(error) => Ok(DictationResult {
                 raw_text: raw.clone(),
                 final_text: raw,
                 duration_ms: 0,
                 processing_mode: "clean-fallback".into(),
-                warning: Some(format!("AI cleanup failed; raw text was pasted: {error}")),
+                warning: Some(match transcription_warning {
+                    Some(warning) => {
+                        format!("{warning} AI cleanup also failed; raw text was pasted: {error}")
+                    }
+                    None => format!("AI cleanup failed; raw text was pasted: {error}"),
+                }),
             }),
         }
     } else {
@@ -210,7 +273,7 @@ fn process_recording(
             final_text: raw,
             duration_ms: 0,
             processing_mode: "raw".into(),
-            warning: None,
+            warning: transcription_warning,
         })
     }
 }
@@ -248,6 +311,17 @@ async fn test_provider(settings: AppSettings) -> Result<Vec<String>, String> {
     let key = api_key();
     tauri::async_runtime::spawn_blocking(move || {
         provider::discover_models(&settings, key.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn test_transcription_provider(settings: AppSettings) -> Result<(), String> {
+    let key = transcription_api_key();
+    tauri::async_runtime::spawn_blocking(move || {
+        transcription::test_connection(&settings, key.as_deref())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -400,14 +474,16 @@ pub fn run() {
             let settings = storage::load_settings(&settings_path);
             let history = storage::open_history(&history_path)?;
             let mut worker = WorkerManager::new();
-            if let (Ok(worker_path), Ok(model_path)) = (
-                locate_worker(app.handle()),
-                locate_model(app.handle(), &settings.model),
-            ) {
-                // Starting the process here lets it load the selected model in
-                // the background while the user opens or focuses another app.
-                if let Err(error) = worker.preload(&worker_path, &model_path) {
-                    eprintln!("VoiceDictate could not preload Whisper: {error:#}");
+            if settings.transcription_mode != "remote" {
+                if let (Ok(worker_path), Ok(model_path)) = (
+                    locate_worker(app.handle()),
+                    locate_model(app.handle(), &settings.model),
+                ) {
+                    // Starting the process here lets it load the selected model in
+                    // the background while the user opens or focuses another app.
+                    if let Err(error) = worker.preload(&worker_path, &model_path) {
+                        eprintln!("VoiceDictate could not preload Whisper: {error:#}");
+                    }
                 }
             }
             app.manage(AppState {
@@ -458,6 +534,7 @@ pub fn run() {
             get_settings,
             save_settings,
             set_provider_api_key,
+            set_transcription_api_key,
             list_microphones,
             start_recording,
             cancel_recording,
@@ -466,6 +543,7 @@ pub fn run() {
             delete_history,
             clear_history,
             test_provider,
+            test_transcription_provider,
             is_base_model_installed,
             install_base_model
         ])

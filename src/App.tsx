@@ -26,6 +26,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   microphoneName: null,
   language: "auto",
   model: "tiny",
+  transcriptionMode: "local",
+  transcriptionProvider: "whisper-cpp",
+  transcriptionBaseUrl: "",
+  transcriptionModel: "",
+  transcriptionTimeoutSeconds: 90,
+  transcriptionApiKeyConfigured: false,
   cleanupEnabled: false,
   provider: "none",
   providerBaseUrl: "http://127.0.0.1:11434",
@@ -50,6 +56,7 @@ function App() {
   const [installingBase, setInstallingBase] = useState(false);
   const [query, setQuery] = useState("");
   const [connectionState, setConnectionState] = useState<"idle" | "testing" | "ok" | "error">("idle");
+  const [transcriptionConnectionState, setTranscriptionConnectionState] = useState<"idle" | "testing" | "ok" | "error">("idle");
   const [message, setMessage] = useState("");
   const pressStartedAt = useRef<number | null>(null);
   const toggleRecording = useRef(false);
@@ -91,15 +98,22 @@ function App() {
     if (processing.current) return;
     processing.current = true;
     setStatus("transcribing");
-    setStatusText("Transcribing locally — this PC may take a moment…");
+    setStatusText(settings.transcriptionMode === "local"
+      ? "Transcribing locally — this PC may take a moment…"
+      : settings.transcriptionMode === "remote"
+        ? "Transcribing with the configured server…"
+        : "Trying remote transcription…");
     try {
       const result = await invoke<DictationResult>("stop_and_process");
-      if (result.processingMode === "clean") {
+      if (result.warning) {
+        setStatus("success");
+        setStatusText(result.warning);
+      } else if (result.processingMode === "clean") {
         setStatus("cleaning");
         setStatusText("Text cleaned and pasted");
       } else {
         setStatus("success");
-        setStatusText(result.warning ?? "Text pasted");
+        setStatusText("Text pasted");
       }
       await refreshHistory();
       window.setTimeout(() => {
@@ -113,7 +127,7 @@ function App() {
       processing.current = false;
       toggleRecording.current = false;
     }
-  }, [refreshHistory]);
+  }, [refreshHistory, settings.transcriptionMode]);
 
   const startRecording = useCallback(async () => {
     if (processing.current || statusRef.current === "listening") return;
@@ -180,6 +194,18 @@ function App() {
     }
   };
 
+  const testTranscriptionProvider = async () => {
+    setTranscriptionConnectionState("testing");
+    try {
+      await invoke("test_transcription_provider", { settings });
+      setTranscriptionConnectionState("ok");
+      setMessage("Transcription server connected");
+    } catch (error) {
+      setTranscriptionConnectionState("error");
+      setMessage(`Transcription connection failed: ${String(error)}`);
+    }
+  };
+
   const installBaseModel = async () => {
     setInstallingBase(true);
     setMessage("Downloading and verifying the multilingual Base modelâ€¦");
@@ -221,7 +247,7 @@ function App() {
             <h1>{statusText}</h1>
             <p className="muted">Tap <kbd>{activeShortcut}</kbd> to toggle, or hold it while speaking.</p>
             <div className="status-grid">
-              <article><span>Speech model</span><strong>Whisper {settings.model === "tiny" ? "Tiny" : "Base"}</strong><small>Runs on this PC</small></article>
+              <article><span>Transcription</span><strong>{settings.transcriptionMode === "local" ? `Local Whisper ${settings.model === "tiny" ? "Tiny" : "Base"}` : settings.transcriptionMode === "remote" ? "Remote server" : "Automatic"}</strong><small>{settings.transcriptionMode === "local" ? "Audio stays on this PC" : settings.transcriptionMode === "remote" ? "Uses your configured server" : "Remote with local fallback"}</small></article>
               <article><span>AI cleanup</span><strong>{settings.cleanupEnabled ? settings.provider : "Off"}</strong><small>{settings.cleanupEnabled ? settings.providerModel || "Choose a model" : "Raw transcript"}</small></article>
               <article><span>History</span><strong>{history.length} entries</strong><small>Text only</small></article>
             </div>
@@ -242,9 +268,23 @@ function App() {
 
         {page === "settings" && (
           <section>
-            <header className="page-header"><div><h1>Settings</h1><p>Local transcription with optional private AI cleanup.</p></div><button className="primary" onClick={saveSettings}><Check size={16} /> Save</button></header>
+            <header className="page-header"><div><h1>Settings</h1><p>Choose where speech is transcribed and optionally clean the resulting text.</p></div><button className="primary" onClick={saveSettings}><Check size={16} /> Save</button></header>
             <div className="settings-grid">
-              <div className="card"><h2>Dictation</h2><label>Global shortcut<input value={settings.shortcut} onChange={(event) => setSettings({ ...settings, shortcut: event.target.value })} /></label><label>Microphone<select value={settings.microphoneName ?? ""} onChange={(event) => setSettings({ ...settings, microphoneName: event.target.value || null })}><option value="">System default</option>{microphones.map((name) => <option key={name}>{name}</option>)}</select></label><div className="two-col"><label>Language<select value={settings.language} onChange={(event) => setSettings({ ...settings, language: event.target.value })}><option value="auto">Auto detect</option><option value="en">English</option><option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option></select></label><label>Speech model<select value={settings.model} onChange={(event) => setSettings({ ...settings, model: event.target.value as "tiny" | "base" })}><option value="tiny">Tiny (included)</option><option value="base" disabled={!baseInstalled}>Base {baseInstalled ? "(installed)" : "(download first)"}</option></select></label></div>{!baseInstalled && <button className="secondary" disabled={installingBase} onClick={installBaseModel}><Sparkles size={16} /> {installingBase ? "Installing Base modelâ€¦" : "Install optional Base model"}</button>}</div>
+              <div className="card"><h2>Dictation</h2><label>Global shortcut<input value={settings.shortcut} onChange={(event) => setSettings({ ...settings, shortcut: event.target.value })} /></label><label>Microphone<select value={settings.microphoneName ?? ""} onChange={(event) => setSettings({ ...settings, microphoneName: event.target.value || null })}><option value="">System default</option>{microphones.map((name) => <option key={name}>{name}</option>)}</select></label><div className="two-col"><label>Language<select value={settings.language} onChange={(event) => setSettings({ ...settings, language: event.target.value })}><option value="auto">Auto detect</option><option value="en">English</option><option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option></select></label><label>{settings.transcriptionMode === "automatic" ? "Local fallback model" : "Local speech model"}<select value={settings.model} onChange={(event) => setSettings({ ...settings, model: event.target.value as "tiny" | "base" })}><option value="tiny">Tiny (included)</option><option value="base" disabled={!baseInstalled}>Base {baseInstalled ? "(installed)" : "(download first)"}</option></select></label></div>{!baseInstalled && settings.transcriptionMode !== "remote" && <button className="secondary" disabled={installingBase} onClick={installBaseModel}><Sparkles size={16} /> {installingBase ? "Installing Base model…" : "Install optional Base model"}</button>}</div>
+              <div className="card">
+                <h2>Transcription location</h2>
+                <label>Method<select value={settings.transcriptionMode} onChange={(event) => setSettings({ ...settings, transcriptionMode: event.target.value as AppSettings["transcriptionMode"] })}><option value="local">Local — free and private</option><option value="remote">My server or online provider</option><option value="automatic">Automatic — remote, then local fallback</option></select></label>
+                {settings.transcriptionMode === "local" ? <p className="privacy-warning safe"><strong>Audio stays on this PC.</strong> No transcription network request is made.</p> : <>
+                  <label>Server type<select value={settings.transcriptionProvider} onChange={(event) => setSettings({ ...settings, transcriptionProvider: event.target.value as AppSettings["transcriptionProvider"] })}><option value="whisper-cpp">whisper.cpp server</option><option value="openai-compatible">OpenAI-compatible audio API</option></select></label>
+                  <label>Server URL<input placeholder={settings.transcriptionProvider === "whisper-cpp" ? "http://100.x.x.x:8080" : "https://api.example.com/v1"} value={settings.transcriptionBaseUrl} onChange={(event) => setSettings({ ...settings, transcriptionBaseUrl: event.target.value })} /></label>
+                  {settings.transcriptionProvider === "openai-compatible" && <label>Transcription model<input placeholder="whisper-large-v3-turbo or whisper-1" value={settings.transcriptionModel} onChange={(event) => setSettings({ ...settings, transcriptionModel: event.target.value })} /></label>}
+                  <label>API key<input type="password" placeholder={settings.transcriptionApiKeyConfigured ? "Saved securely" : "Optional for private servers"} onChange={(event) => invoke("set_transcription_api_key", { apiKey: event.target.value })} /></label>
+                  <label>Timeout (seconds)<input type="number" min={5} max={600} value={settings.transcriptionTimeoutSeconds} onChange={(event) => setSettings({ ...settings, transcriptionTimeoutSeconds: Number(event.target.value) || 90 })} /></label>
+                  <button className="secondary" onClick={testTranscriptionProvider}>{transcriptionConnectionState === "testing" ? <RotateCcw className="spin" size={16} /> : transcriptionConnectionState === "ok" ? <Wifi size={16} /> : transcriptionConnectionState === "error" ? <WifiOff size={16} /> : <Sparkles size={16} />} {transcriptionConnectionState === "ok" ? "Connected" : transcriptionConnectionState === "error" ? "Connection failed" : "Test transcription server"}</button>
+                  <p className="privacy-warning"><strong>Microphone audio will be sent to this server.</strong> VoiceDictate deletes its temporary copy after transcription. Use HTTPS for public providers.</p>
+                  {settings.transcriptionMode === "automatic" && <p className="privacy-warning safe">If the server cannot be reached, bundled local Whisper will be used automatically.</p>}
+                </>}
+              </div>
               <div className="card"><div className="toggle-row"><div><h2>AI cleanup</h2><p>Only transcript text is sent.</p></div><button className={`switch ${settings.cleanupEnabled ? "on" : ""}`} onClick={() => setSettings({ ...settings, cleanupEnabled: !settings.cleanupEnabled })}><span /></button></div><label>Provider<select value={settings.provider} onChange={(event) => setSettings({ ...settings, provider: event.target.value as AppSettings["provider"] })}><option value="none">None</option><option value="ollama">Ollama</option><option value="openai-compatible">OpenAI compatible</option></select></label><label>Base URL<input value={settings.providerBaseUrl} onChange={(event) => setSettings({ ...settings, providerBaseUrl: event.target.value })} /></label><label>Model<input list="provider-models" value={settings.providerModel} onChange={(event) => setSettings({ ...settings, providerModel: event.target.value })} /><datalist id="provider-models">{models.map((model) => <option key={model} value={model} />)}</datalist></label>{settings.provider === "openai-compatible" && <label>API key<input type="password" placeholder={settings.providerApiKeyConfigured ? "Saved securely" : "Optional for private servers"} onChange={(event) => invoke("set_provider_api_key", { apiKey: event.target.value })} /></label>}<button className="secondary" onClick={testProvider}>{connectionState === "testing" ? <RotateCcw className="spin" size={16} /> : connectionState === "ok" ? <Wifi size={16} /> : connectionState === "error" ? <WifiOff size={16} /> : <Sparkles size={16} />} {connectionState === "ok" ? "Connected" : connectionState === "error" ? "Connection failed" : "Test connection"}</button><label>Cleanup instructions<textarea rows={5} value={settings.cleanupPrompt} onChange={(event) => setSettings({ ...settings, cleanupPrompt: event.target.value })} /></label></div>
             </div>
             {message && <div className="toast">{message}</div>}
