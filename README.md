@@ -1,7 +1,6 @@
 # VoiceDictate
 
 VoiceDictate is a free, open-source Windows dictation app. Press a shortcut, speak, and have Whisper transcription pasted into any application. Local transcription works without an account, subscription, word limit, telemetry, or required server. Users can optionally configure their own private or hosted transcription endpoint.
-
 ## Download for Windows
 
 ### [Download the VoiceDictate installer](https://github.com/jbuddrepo/voicedictate/releases/download/0.2.0-beta.1/VoiceDictate-Setup-0.2.0.exe)
