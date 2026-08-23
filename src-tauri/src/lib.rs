@@ -24,6 +24,7 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Manager, PhysicalPosition, State, WindowEvent,
 };
+use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 use worker::WorkerManager;
 
@@ -328,6 +329,28 @@ async fn test_transcription_provider(settings: AppSettings) -> Result<(), String
     .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn open_help_document(app: AppHandle, document: String) -> Result<(), String> {
+    let file = match document.as_str() {
+        "remote-transcription" => "REMOTE-TRANSCRIPTION.md",
+        "building" => "BUILDING.md",
+        "video-guide" => "VIDEO-GUIDE.md",
+        _ => return Err("The requested help document is unavailable".into()),
+    };
+    let path = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?
+        .join("docs")
+        .join(file);
+    if !path.exists() {
+        return Err(format!("The bundled help document is missing: {file}"));
+    }
+    app.opener()
+        .open_path(path.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|error| error.to_string())
+}
+
 const BASE_MODEL_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin";
 const BASE_MODEL_SHA256: &str = "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe";
@@ -544,6 +567,7 @@ pub fn run() {
             clear_history,
             test_provider,
             test_transcription_provider,
+            open_help_document,
             is_base_model_installed,
             install_base_model
         ])

@@ -4,6 +4,8 @@ This guide explains how to run Whisper on another computer and connect VoiceDict
 
 VoiceDictate continues to run on the Windows computer where you dictate. It records the microphone, sends one temporary WAV file to the server you select, receives text, deletes the WAV, and pastes the text into the focused application.
 
+In VoiceDictate 0.2.0 or newer, open **Help & About → Remote Whisper setup** to open the copy of this guide bundled with the installed application.
+
 ## Read this before starting
 
 - The Windows computer and Whisper server must be able to reach each other. They may be on the same LAN, or connected to the same private Tailscale network. They do not have to be in the same building when Tailscale is used.
@@ -23,6 +25,179 @@ Model choices:
 - `base`: recommended first test and a good speed/accuracy balance.
 - `small`: better accuracy, more CPU and memory, slower response.
 - Models ending in `.en` are English-only. Models without `.en` are multilingual.
+
+## Choose the setup that matches your server
+
+- **Path A — another Windows PC:** recommended for most users. It uses the official prebuilt whisper.cpp Windows package and does not require Docker or developer tools.
+- **Path B — online provider:** no second computer is needed. Configure an HTTPS service supporting the OpenAI-compatible `/v1/audio/transcriptions` API and use the account owner's model and API key.
+- **Path C — K11, Linux VM, NAS, or Linux server:** use the Docker walkthrough later in this guide.
+
+# Path A: Run Whisper on another Windows PC
+
+The second Windows PC does the transcription. VoiceDictate remains installed on the Windows PC where the microphone and target application are being used. Both computers must be connected through the same trusted LAN or the same private Tailscale network.
+
+The official whisper.cpp release workflow publishes a Windows x64 package named `whisper-bin-x64.zip`. Use only the [official whisper.cpp Releases page](https://github.com/ggml-org/whisper.cpp/releases) or the official latest-release link below.
+
+## Windows step 1: Prepare a folder
+
+On the more powerful Windows server PC, open regular PowerShell and run:
+
+```powershell
+$WhisperFolder = "$env:USERPROFILE\VoiceDictate-Whisper-Server"
+New-Item -ItemType Directory -Force -Path $WhisperFolder
+Set-Location $WhisperFolder
+```
+
+## Windows step 2: Download whisper.cpp
+
+```powershell
+Invoke-WebRequest `
+  -Uri "https://github.com/ggml-org/whisper.cpp/releases/latest/download/whisper-bin-x64.zip" `
+  -OutFile ".\whisper-bin-x64.zip"
+Expand-Archive -LiteralPath ".\whisper-bin-x64.zip" -DestinationPath ".\whisper-bin" -Force
+$WhisperServer = (Get-ChildItem ".\whisper-bin" -Recurse -Filter "whisper-server.exe" | Select-Object -First 1).FullName
+$WhisperServer
+```
+
+The last command should display a full path ending in `whisper-server.exe`. If it displays nothing, return to the official Releases page and confirm that the x64 ZIP downloaded and extracted correctly.
+
+## Windows step 3: Download the multilingual Base model
+
+```powershell
+Invoke-WebRequest `
+  -Uri "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin" `
+  -OutFile ".\ggml-base.bin"
+Get-Item ".\ggml-base.bin" | Select-Object Name,Length
+```
+
+The Base model is approximately 142 MB. If the file is extremely small, the download did not succeed.
+
+## Windows step 4: Find the server PC address
+
+For use on the same home or office network:
+
+```powershell
+ipconfig
+```
+
+Find the active Ethernet or Wi-Fi adapter and write down its IPv4 address, such as `192.168.1.60`. Do not use `127.0.0.1`.
+
+For use through Tailscale, install Tailscale on both Windows PCs, sign both into the same tailnet, and run:
+
+```powershell
+tailscale ip -4
+```
+
+Write down the `100.x.y.z` address. Follow the [official Tailscale download and installation instructions](https://tailscale.com/download/windows). The computers do not need to be on the same physical network when both are connected through Tailscale.
+
+## Windows step 5: Start the Whisper server
+
+Continue in the same PowerShell window:
+
+```powershell
+& $WhisperServer --host 0.0.0.0 --port 8080 -m ".\ggml-base.bin" -t 8
+```
+
+Keep this window open during the first test. Windows Firewall may ask whether to allow access. Select **Private networks only**. Do not allow unrestricted public-network access.
+
+If the PC has fewer than eight logical processors, replace `-t 8` with `-t 4`. If Windows reports a missing Visual C++ runtime DLL, install the current Microsoft Visual C++ x64 Redistributable and try again.
+
+On the server PC, open `http://127.0.0.1:8080` in a browser. A whisper.cpp server page indicates that it started.
+
+## Windows step 6: Restrict the firewall
+
+For a LAN-only server, open PowerShell **as Administrator** and add a rule limited to private local-subnet devices:
+
+```powershell
+New-NetFirewallRule `
+  -DisplayName "VoiceDictate Whisper Server - Private LAN" `
+  -Direction Inbound `
+  -Protocol TCP `
+  -LocalPort 8080 `
+  -RemoteAddress LocalSubnet `
+  -Profile Private `
+  -Action Allow
+```
+
+For Tailscale, a tightly scoped alternative is:
+
+```powershell
+New-NetFirewallRule `
+  -DisplayName "VoiceDictate Whisper Server - Tailscale" `
+  -Direction Inbound `
+  -Protocol TCP `
+  -LocalPort 8080 `
+  -RemoteAddress 100.64.0.0/10 `
+  -Action Allow
+```
+
+Review existing port-8080 firewall rules and remove any broad rule that was accidentally allowed on Public networks. Never create a router port-forward for this port.
+
+From the Windows PC running VoiceDictate, test connectivity using the server address:
+
+```powershell
+Test-NetConnection -ComputerName 192.168.1.60 -Port 8080
+```
+
+For Tailscale, replace the example with the server's `100.x.y.z` address. Continue only when `TcpTestSucceeded` is `True`.
+
+## Windows step 7: Connect VoiceDictate
+
+1. Open **VoiceDictate → Settings** on the microphone/client PC.
+2. Under **Transcription location**, choose **Automatic — remote, then local fallback** for the safest first setup.
+3. Choose **whisper.cpp server**.
+4. Enter `http://SERVER_ADDRESS:8080`, using the LAN or Tailscale address recorded above.
+5. Leave the API key blank. The basic whisper.cpp server does not provide authentication and must remain private.
+6. Select **Test transcription server** and confirm **Connected**.
+7. Select **Save**, open Notepad, and dictate a short sentence.
+
+## Windows step 8: Start it again later
+
+The PowerShell server window must remain open. Closing it stops remote transcription. For the first beta test, start it manually using the same folder and command:
+
+```powershell
+Set-Location "$env:USERPROFILE\VoiceDictate-Whisper-Server"
+$WhisperServer = (Get-ChildItem ".\whisper-bin" -Recurse -Filter "whisper-server.exe" | Select-Object -First 1).FullName
+& $WhisperServer --host 0.0.0.0 --port 8080 -m ".\ggml-base.bin" -t 8
+```
+
+Automatic startup should be configured only after manual operation is proven. A future VoiceDictate server-helper installer could automate downloading the model, creating the firewall rule, and starting the service; version 0.2.0 does not install server software on another PC automatically.
+
+# Path B: Use an online transcription provider
+
+This option is for people who do not have another suitable computer or do not want to maintain a server. It is normally fast, but microphone audio is uploaded to an external company and the provider may charge for usage.
+
+VoiceDictate 0.2.0 supports services implementing the OpenAI-compatible audio transcription endpoint. Two examples are:
+
+| Provider | VoiceDictate base URL | Example model | Official instructions |
+| --- | --- | --- | --- |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini-transcribe` or `whisper-1` | [OpenAI transcription API](https://platform.openai.com/docs/api-reference/audio/createTranscription) |
+| Groq | `https://api.groq.com/openai/v1` | `whisper-large-v3-turbo` | [Groq speech-to-text](https://console.groq.com/docs/speech-to-text) |
+
+Provider models, prices, free allowances, file limits, retention terms, and availability can change. Confirm the current information on the provider's official website before recording a tutorial or recommending it.
+
+## Online step 1: Create the user's own account and key
+
+1. Visit the provider's official website.
+2. Create or sign into the account that will pay for and control the transcription usage.
+3. Review its current pricing and audio-data policy.
+4. Create an API key.
+5. Do not paste the key into chat, documentation, a video, GitHub, or a shared settings file.
+
+## Online step 2: Configure VoiceDictate
+
+1. Open **Settings → Transcription location**.
+2. Choose **My server or online provider**, or choose **Automatic** to retain local fallback.
+3. Set **Server type** to **OpenAI-compatible audio API**.
+4. Enter the HTTPS base URL from the table.
+5. Enter a currently supported transcription model.
+6. Paste the API key into the password field. VoiceDictate stores it in Windows Credential Manager.
+7. Select **Test transcription server**, then **Save**.
+8. Dictate a short non-sensitive sentence first and check the provider's usage page.
+
+VoiceDictate does not operate a hosted transcription service, include a shared API key, or hide provider charges. Each user chooses and controls their own provider. Do not use plain HTTP for an online service.
+
+# Path C: Run Whisper on a K11 or Linux server
 
 ## K11 and Proxmox preparation
 
@@ -254,4 +429,3 @@ The VoiceDictate Windows application never supplies a shared cloud account or sh
 - [ ] The user understands that Remote and Automatic modes send microphone audio.
 - [ ] Automatic fallback is enabled when uninterrupted dictation matters.
 - [ ] Server and container updates are applied periodically.
-

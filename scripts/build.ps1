@@ -71,6 +71,7 @@ try {
         $artifactDirectory = Join-Path $projectRoot 'artifacts'
         $portableDirectory = Join-Path $artifactDirectory "VoiceDictate-Portable-$appVersion"
         New-Item -ItemType Directory -Force -Path (Join-Path $portableDirectory 'resources\models') | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $portableDirectory 'docs') | Out-Null
         $installer = Get-ChildItem -LiteralPath (Join-Path $tauriRoot 'target\release\bundle\nsis') -Filter "*$appVersion*setup.exe" | Select-Object -First 1
         if (-not $installer) { throw 'The NSIS installer was not produced.' }
         Copy-Item -LiteralPath $installer.FullName -Destination (Join-Path $artifactDirectory "VoiceDictate-Setup-$appVersion.exe") -Force
@@ -85,6 +86,11 @@ try {
         Copy-Item -LiteralPath (Join-Path $projectRoot 'PRIVACY.md') -Destination $portableDirectory -Force
         Copy-Item -LiteralPath (Join-Path $projectRoot 'REMOTE-TRANSCRIPTION.md') -Destination $portableDirectory -Force
         Copy-Item -LiteralPath (Join-Path $projectRoot 'BUILDING.md') -Destination $portableDirectory -Force
+        Copy-Item -LiteralPath (Join-Path $projectRoot 'VIDEO-GUIDE.md') -Destination $portableDirectory -Force
+        Copy-Item -LiteralPath (Join-Path $projectRoot 'REMOTE-TRANSCRIPTION.md') -Destination (Join-Path $portableDirectory 'docs') -Force
+        Copy-Item -LiteralPath (Join-Path $projectRoot 'BUILDING.md') -Destination (Join-Path $portableDirectory 'docs') -Force
+        Copy-Item -LiteralPath (Join-Path $projectRoot 'VIDEO-GUIDE.md') -Destination (Join-Path $portableDirectory 'docs') -Force
+        Copy-Item -LiteralPath (Join-Path $projectRoot 'PRIVACY.md') -Destination (Join-Path $portableDirectory 'docs') -Force
         Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD-PARTY-NOTICES.md') -Destination $portableDirectory -Force
         Copy-Item -LiteralPath (Join-Path $projectRoot 'PORTABLE-README.txt') -Destination $portableDirectory -Force
         Compress-Archive -Path "$portableDirectory\*" -DestinationPath (Join-Path $artifactDirectory "VoiceDictate-Portable-$appVersion.zip") -Force

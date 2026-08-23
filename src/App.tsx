@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { emit } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { isRegistered, register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import {
   Check,
+  BookOpen,
+  CircleHelp,
   Clock3,
   Copy,
   Database,
@@ -41,10 +44,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   launchAtStartup: false
 };
 
-type Page = "home" | "history" | "settings";
+type Page = "home" | "history" | "settings" | "about";
 
 function App() {
   const [page, setPage] = useState<Page>("home");
+  const [appVersion, setAppVersion] = useState("0.2.0");
   const [status, setStatus] = useState<AppStatus>("idle");
   const [statusText, setStatusText] = useState("Ready to dictate");
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -64,6 +68,10 @@ function App() {
   const statusRef = useRef<AppStatus>("idle");
 
   useEffect(() => { statusRef.current = status; }, [status]);
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     emit("dictation-status", { status, text: statusText }).catch(() => undefined);
@@ -228,11 +236,12 @@ function App() {
   return (
     <div className="app-shell">
       <aside>
-        <div className="brand"><span className="brand-mark"><Mic size={19} /></span><div><strong>VoiceDictate</strong><small>Private voice typing</small></div></div>
+        <div className="brand"><span className="brand-mark"><Mic size={19} /></span><div><strong>VoiceDictate</strong><small>Private voice typing · v{appVersion}</small></div></div>
         <nav>
           <button className={page === "home" ? "active" : ""} onClick={() => setPage("home")}><Mic size={18} /> Dictate</button>
           <button className={page === "history" ? "active" : ""} onClick={() => setPage("history")}><History size={18} /> History</button>
           <button className={page === "settings" ? "active" : ""} onClick={() => setPage("settings")}><SettingsIcon size={18} /> Settings</button>
+          <button className={page === "about" ? "active" : ""} onClick={() => setPage("about")}><CircleHelp size={18} /> Help &amp; About</button>
         </nav>
         <div className="privacy-note"><Database size={16} /><span><strong>Local by default</strong><br />Audio is deleted after transcription.</span></div>
       </aside>
@@ -281,11 +290,36 @@ function App() {
                   <label>API key<input type="password" placeholder={settings.transcriptionApiKeyConfigured ? "Saved securely" : "Optional for private servers"} onChange={(event) => invoke("set_transcription_api_key", { apiKey: event.target.value })} /></label>
                   <label>Timeout (seconds)<input type="number" min={5} max={600} value={settings.transcriptionTimeoutSeconds} onChange={(event) => setSettings({ ...settings, transcriptionTimeoutSeconds: Number(event.target.value) || 90 })} /></label>
                   <button className="secondary" onClick={testTranscriptionProvider}>{transcriptionConnectionState === "testing" ? <RotateCcw className="spin" size={16} /> : transcriptionConnectionState === "ok" ? <Wifi size={16} /> : transcriptionConnectionState === "error" ? <WifiOff size={16} /> : <Sparkles size={16} />} {transcriptionConnectionState === "ok" ? "Connected" : transcriptionConnectionState === "error" ? "Connection failed" : "Test transcription server"}</button>
+                  <button className="secondary" onClick={() => invoke("open_help_document", { document: "remote-transcription" }).catch((error) => setMessage(String(error)))}><BookOpen size={16} /> Open remote Whisper setup guide</button>
                   <p className="privacy-warning"><strong>Microphone audio will be sent to this server.</strong> VoiceDictate deletes its temporary copy after transcription. Use HTTPS for public providers.</p>
                   {settings.transcriptionMode === "automatic" && <p className="privacy-warning safe">If the server cannot be reached, bundled local Whisper will be used automatically.</p>}
                 </>}
               </div>
               <div className="card"><div className="toggle-row"><div><h2>AI cleanup</h2><p>Only transcript text is sent.</p></div><button className={`switch ${settings.cleanupEnabled ? "on" : ""}`} onClick={() => setSettings({ ...settings, cleanupEnabled: !settings.cleanupEnabled })}><span /></button></div><label>Provider<select value={settings.provider} onChange={(event) => setSettings({ ...settings, provider: event.target.value as AppSettings["provider"] })}><option value="none">None</option><option value="ollama">Ollama</option><option value="openai-compatible">OpenAI compatible</option></select></label><label>Base URL<input value={settings.providerBaseUrl} onChange={(event) => setSettings({ ...settings, providerBaseUrl: event.target.value })} /></label><label>Model<input list="provider-models" value={settings.providerModel} onChange={(event) => setSettings({ ...settings, providerModel: event.target.value })} /><datalist id="provider-models">{models.map((model) => <option key={model} value={model} />)}</datalist></label>{settings.provider === "openai-compatible" && <label>API key<input type="password" placeholder={settings.providerApiKeyConfigured ? "Saved securely" : "Optional for private servers"} onChange={(event) => invoke("set_provider_api_key", { apiKey: event.target.value })} /></label>}<button className="secondary" onClick={testProvider}>{connectionState === "testing" ? <RotateCcw className="spin" size={16} /> : connectionState === "ok" ? <Wifi size={16} /> : connectionState === "error" ? <WifiOff size={16} /> : <Sparkles size={16} />} {connectionState === "ok" ? "Connected" : connectionState === "error" ? "Connection failed" : "Test connection"}</button><label>Cleanup instructions<textarea rows={5} value={settings.cleanupPrompt} onChange={(event) => setSettings({ ...settings, cleanupPrompt: event.target.value })} /></label></div>
+            </div>
+            {message && <div className="toast">{message}</div>}
+          </section>
+        )}
+
+        {page === "about" && (
+          <section>
+            <header className="page-header"><div><h1>Help &amp; About</h1><p>VoiceDictate version {appVersion}</p></div></header>
+            <div className="about-hero"><span className="brand-mark"><Mic size={24} /></span><div><h2>VoiceDictate {appVersion}</h2><p>Free, local-first Windows dictation with optional private or hosted transcription.</p></div></div>
+            <h2 className="section-title">Choose how transcription runs</h2>
+            <div className="about-grid">
+              <article><strong>Local Whisper</strong><p>Included and ready immediately. Audio stays on this Windows PC. No server, account, API key, internet connection, or usage fee is required.</p></article>
+              <article><strong>Your own server</strong><p>Run whisper.cpp on another Windows PC, K11, Linux VM, home server, or NAS. Connect over a trusted LAN or private Tailscale network.</p></article>
+              <article><strong>Online provider</strong><p>Use a provider supporting the OpenAI-compatible audio transcription API. The user supplies the HTTPS URL, model, API key, and pays any provider charges.</p></article>
+            </div>
+            <div className="card help-card">
+              <h2>Instructions and review material</h2>
+              <p>These documents are bundled with this installation and can be opened without visiting GitHub.</p>
+              <div className="guide-actions">
+                <button className="secondary" onClick={() => invoke("open_help_document", { document: "remote-transcription" }).catch((error) => setMessage(String(error)))}><BookOpen size={16} /> Remote Whisper setup</button>
+                <button className="secondary" onClick={() => invoke("open_help_document", { document: "video-guide" }).catch((error) => setMessage(String(error)))}><BookOpen size={16} /> Installation video checklist</button>
+                <button className="secondary" onClick={() => invoke("open_help_document", { document: "building" }).catch((error) => setMessage(String(error)))}><BookOpen size={16} /> Build instructions</button>
+              </div>
+              <p className="privacy-warning"><strong>Remote and online modes send microphone audio.</strong> Local mode does not. Never expose an unprotected Whisper or Ollama port directly to the public internet.</p>
             </div>
             {message && <div className="toast">{message}</div>}
           </section>

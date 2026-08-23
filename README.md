@@ -16,6 +16,7 @@ Version 0.2.0 adds user-configured whisper.cpp and OpenAI-compatible transcripti
 
 - [Set up Whisper on a K11, Linux VM, home server, LAN, or Tailscale](REMOTE-TRANSCRIPTION.md)
 - [Build VoiceDictate and a native whisper.cpp server](BUILDING.md)
+- [Installation video recording checklist](VIDEO-GUIDE.md)
 - [Beta testing checklist](BETA-TESTING.md)
 
 ## Privacy model
