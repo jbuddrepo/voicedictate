@@ -79,6 +79,9 @@ fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
 
 #[tauri::command]
 fn save_settings(settings: AppSettings, state: State<'_, AppState>) -> Result<(), String> {
+    if !matches!(settings.activation_behavior.as_str(), "toggle" | "hold") {
+        return Err("Choose Tap to start/stop or Hold to talk".into());
+    }
     storage::save_settings(&state.settings_path, &settings).map_err(|error| error.to_string())?;
     *state
         .settings
@@ -243,6 +246,15 @@ fn process_recording(
         },
         _ => return Err(anyhow!("The selected transcription mode is unsupported")),
     };
+    finish_transcription(raw, transcription_warning, settings, cleanup_key)
+}
+
+fn finish_transcription(
+    raw: String,
+    transcription_warning: Option<String>,
+    settings: &AppSettings,
+    cleanup_key: Option<&str>,
+) -> Result<DictationResult> {
     if raw.is_empty() {
         return Err(anyhow!("No speech was detected"));
     }
@@ -276,6 +288,35 @@ fn process_recording(
             processing_mode: "raw".into(),
             warning: transcription_warning,
         })
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn failed_cleanup_preserves_raw_transcript_and_fallback_warning() {
+        let settings = AppSettings {
+            cleanup_enabled: true,
+            provider: "ollama".into(),
+            provider_base_url: "invalid-url".into(),
+            provider_model: "test-model".into(),
+            ..AppSettings::default()
+        };
+        let result = finish_transcription(
+            "A synthetic test sentence.".into(),
+            Some("Local fallback was used.".into()),
+            &settings,
+            None,
+        )
+        .unwrap();
+        assert_eq!(result.final_text, "A synthetic test sentence.");
+        assert_eq!(result.raw_text, result.final_text);
+        assert_eq!(result.processing_mode, "clean-fallback");
+        let warning = result.warning.unwrap();
+        assert!(warning.contains("Local fallback was used."));
+        assert!(warning.contains("AI cleanup also failed"));
     }
 }
 
@@ -315,7 +356,27 @@ async fn test_provider(settings: AppSettings) -> Result<Vec<String>, String> {
     })
     .await
     .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())
+    .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+async fn test_cleanup(mut settings: AppSettings) -> Result<(), String> {
+    if !matches!(settings.provider.as_str(), "ollama" | "openai-compatible") {
+        return Err("Select a cleanup provider first".into());
+    }
+    settings.cleanup_enabled = true;
+    let key = api_key();
+    tauri::async_runtime::spawn_blocking(move || {
+        provider::clean_text(
+            &settings,
+            key.as_deref(),
+            "This is a short connection test.",
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map(|_| ())
+    .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
@@ -566,6 +627,7 @@ pub fn run() {
             delete_history,
             clear_history,
             test_provider,
+            test_cleanup,
             test_transcription_provider,
             open_help_document,
             is_base_model_installed,

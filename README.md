@@ -3,13 +3,13 @@
 VoiceDictate is a free, open-source Windows dictation app. Press a shortcut, speak, and have Whisper transcription pasted into any application. Local transcription works without an account, subscription, word limit, telemetry, or required server. Users can optionally configure their own private or hosted transcription endpoint.
 ## Download for Windows
 
-### [Download the VoiceDictate installer](https://github.com/jbuddrepo/voicedictate/releases/download/0.2.0-beta.1/VoiceDictate-Setup-0.2.0.exe)
+### [Download the VoiceDictate installer](https://github.com/jbuddrepo/voicedictate/releases/download/v0.2.1-beta.1/VoiceDictate-Setup-0.2.1.exe)
 
-### [Download the portable ZIP](https://github.com/jbuddrepo/voicedictate/releases/download/0.2.0-beta.1/VoiceDictate-Portable-0.2.0.zip)
+### [Download the portable ZIP](https://github.com/jbuddrepo/voicedictate/releases/download/v0.2.1-beta.1/VoiceDictate-Portable-0.2.1.zip)
 
 The portable version does not need installation: extract the whole ZIP and run VoiceDictate. This is an unsigned beta, so Windows SmartScreen may show a warning. See the [releases page](https://github.com/jbuddrepo/voicedictate/releases) for checksums, release notes, and future versions.
 
-Version 0.2.0 adds user-configured whisper.cpp and OpenAI-compatible transcription servers, Automatic local fallback, and the persistent local worker introduced during 0.1.1 development.
+Version 0.2.1 adds explicit Tap/Hold shortcut modes, a short Hold release grace period, and improved cleanup diagnostics with a sample-response test. See [release notes](RELEASE-NOTES.md). Remote transcription, Automatic local fallback, and the persistent local worker remain available.
 
 ## Guides
 
@@ -30,7 +30,7 @@ See [PRIVACY.md](PRIVACY.md) for the complete behavior.
 
 ## Windows beta features
 
-- Tap-to-toggle and hold-to-talk global shortcut
+- Explicit Tap to start/stop (default) or Hold to talk global shortcut
 - Bundled CPU-optimized multilingual Whisper Tiny Q5 model
 - Optional multilingual Base model
 - Optional whisper.cpp and OpenAI-compatible remote transcription

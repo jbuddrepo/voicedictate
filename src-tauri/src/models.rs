@@ -6,6 +6,10 @@ fn default_transcription_mode() -> String {
     "local".into()
 }
 
+fn default_activation_behavior() -> String {
+    "toggle".into()
+}
+
 fn default_transcription_provider() -> String {
     "whisper-cpp".into()
 }
@@ -18,6 +22,8 @@ fn default_transcription_timeout_seconds() -> u64 {
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub shortcut: String,
+    #[serde(default = "default_activation_behavior")]
+    pub activation_behavior: String,
     pub microphone_name: Option<String>,
     pub language: String,
     pub model: String,
@@ -47,6 +53,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             shortcut: "Ctrl+Alt+Space".into(),
+            activation_behavior: default_activation_behavior(),
             microphone_name: None,
             language: "auto".into(),
             model: "tiny".into(),
@@ -120,6 +127,7 @@ mod tests {
         }"#;
         let settings: AppSettings = serde_json::from_str(old).expect("old settings should migrate");
         assert_eq!(settings.transcription_mode, "local");
+        assert_eq!(settings.activation_behavior, "toggle");
         assert_eq!(settings.transcription_provider, "whisper-cpp");
         assert_eq!(settings.transcription_timeout_seconds, 90);
     }
