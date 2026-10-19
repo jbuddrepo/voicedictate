@@ -95,4 +95,19 @@ describe("dictation shortcut", () => {
     busy.mockReturnValue(false);
     expect(start).not.toHaveBeenCalled();
   });
+
+  it("preserves the latest release grace when an earlier stop is queued during startup", async () => {
+    let ready!: () => void;
+    const { shortcut, stop } = setup("hold", new Promise<void>((resolve) => { ready = resolve; }));
+    shortcut.handle("Pressed");
+    shortcut.handle("Released");
+    await vi.advanceTimersByTimeAsync(HOLD_RELEASE_GRACE_MS);
+    shortcut.handle("Pressed");
+    shortcut.handle("Released");
+    ready();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(stop).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(HOLD_RELEASE_GRACE_MS);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
 });

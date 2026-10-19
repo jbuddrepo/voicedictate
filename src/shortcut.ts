@@ -7,6 +7,7 @@ export class DictationShortcut {
   private pressed = false;
   private pressMode: ActivationBehavior = "toggle";
   private disposed = false;
+  private releaseGeneration = 0;
   private releaseTimer: ReturnType<typeof setTimeout> | undefined;
   private operations = Promise.resolve();
 
@@ -25,6 +26,7 @@ export class DictationShortcut {
       if (this.actions.busy()) return;
       if (this.pressed) return; // Ignore keyboard repeat.
       this.pressed = true;
+      this.releaseGeneration += 1;
       this.pressMode = this.actions.mode();
       clearTimeout(this.releaseTimer);
       const mode = this.pressMode;
@@ -35,9 +37,10 @@ export class DictationShortcut {
     } else if (this.pressed) {
       this.pressed = false;
       if (this.pressMode === "hold") {
+        const generation = this.releaseGeneration;
         this.releaseTimer = setTimeout(() => {
           this.enqueue(async () => {
-            if (!this.pressed && this.actions.listening()) await this.actions.stop();
+            if (generation === this.releaseGeneration && !this.pressed && this.actions.listening()) await this.actions.stop();
           });
         }, HOLD_RELEASE_GRACE_MS);
       }
