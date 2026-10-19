@@ -16,7 +16,8 @@ Local dictation makes no network requests. Network access occurs only when the u
 
 1. Downloads an optional speech model; or
 2. Selects Remote or Automatic transcription and configures a whisper.cpp or OpenAI-compatible audio endpoint; or
-3. Enables AI cleanup and configures an Ollama or OpenAI-compatible text endpoint.
+3. Enables AI cleanup and configures an Ollama or OpenAI-compatible text endpoint; or
+4. Selects a server/model check or **Test cleanup**. Server checks request model metadata; Test cleanup sends a fixed sample sentence and the configured cleanup instructions to the selected endpoint, even if cleanup is currently off. It does not record audio, paste text, or save history.
 
 Remote transcription sends microphone audio to the configured transcription endpoint. When cleanup is enabled, VoiceDictate sends transcript text and the configured cleanup instructions to the separately configured cleanup endpoint. It never sends microphone audio to an Ollama or other text-cleanup model. API keys are stored using Windows Credential Manager and are not written to the settings file.
 
