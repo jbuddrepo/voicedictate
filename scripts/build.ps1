@@ -95,7 +95,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $projectRoot 'PORTABLE-README.txt') -Destination $portableDirectory -Force
         Compress-Archive -Path "$portableDirectory\*" -DestinationPath (Join-Path $artifactDirectory "VoiceDictate-Portable-$appVersion.zip") -Force
 
-        Get-ChildItem -LiteralPath $artifactDirectory -File | Where-Object Name -ne 'SHA256SUMS.txt' | ForEach-Object {
+        Get-ChildItem -LiteralPath $artifactDirectory -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' -and $_.Name -like "*-$appVersion*" } | ForEach-Object {
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
             "$hash  $($_.Name)"
         } | Set-Content -Encoding ascii (Join-Path $artifactDirectory 'SHA256SUMS.txt')

@@ -1,10 +1,12 @@
 export type AppStatus = "idle" | "listening" | "transcribing" | "cleaning" | "success" | "error";
 export type ProviderKind = "none" | "ollama" | "openai-compatible";
+export type ActivationBehavior = "toggle" | "hold";
 export type TranscriptionMode = "local" | "remote" | "automatic";
 export type TranscriptionProviderKind = "whisper-cpp" | "openai-compatible";
 
 export interface AppSettings {
   shortcut: string;
+  activationBehavior: ActivationBehavior;
   microphoneName: string | null;
   language: string;
   model: "tiny" | "base";
