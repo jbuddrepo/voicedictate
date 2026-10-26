@@ -83,6 +83,30 @@ pub struct HistoryEntry {
     pub created_at: String,
     pub duration_ms: u64,
     pub processing_mode: String,
+    pub transcription_source: String,
+    pub processing_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessingTimings {
+    pub capture_ms: u64,
+    pub finish_ms: u64,
+    pub cleanup_ms: u64,
+    pub paste_ms: u64,
+    pub release_to_text_ms: u64,
+    pub inference_ms: u64,
+    pub incremental_chunks: usize,
+    pub cpu_threads: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusPayload {
+    pub status: String,
+    pub text: String,
+    pub activation_behavior: String,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,14 +117,19 @@ pub struct DictationResult {
     pub duration_ms: u64,
     pub processing_mode: String,
     pub warning: Option<String>,
+    #[serde(default)]
+    pub transcription_source: String,
+    #[serde(default)]
+    pub timings: ProcessingTimings,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerResponse {
     pub text: String,
-    #[serde(rename = "inferenceMs")]
-    pub _inference_ms: u64,
+    pub inference_ms: u64,
+    #[serde(default)]
+    pub threads: usize,
     #[serde(rename = "language")]
     pub _language: Option<String>,
     #[serde(default)]

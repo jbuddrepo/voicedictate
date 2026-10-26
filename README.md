@@ -1,6 +1,12 @@
 # VoiceDictate
 
 VoiceDictate is a free, open-source Windows dictation app. Press a shortcut, speak, and have Whisper transcription pasted into any application. Local transcription works without an account, subscription, word limit, telemetry, or required server. Users can optionally configure their own private or hosted transcription endpoint.
+
+## 0.2.2 source update
+
+The next beta processes completed passages during natural pauses while you are still speaking, then finishes the remaining audio and pastes the complete text once. Offline local transcription remains the default. Continuous speech is kept intact until a safe pause or the final pass; this is incremental transcription rather than a guarantee of instant text after release.
+
+This update also adds press-to-select shortcuts (including Ctrl + Windows alone), single-instance protection, status-window placement on the cursor's display, actual transcription-source reporting, processing timings, and microphone refresh. Both CPU worker variants now explicitly optimize the native inference core for release builds. See [release notes](RELEASE-NOTES.md). The download links below continue to point to the previously published 0.2.1 beta until the new release is published.
 ## Download for Windows
 
 ### [Download the VoiceDictate installer](https://github.com/jbuddrepo/voicedictate/releases/download/v0.2.1-beta.1/VoiceDictate-Setup-0.2.1.exe)

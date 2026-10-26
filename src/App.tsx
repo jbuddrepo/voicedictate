@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
-import { emit } from "@tauri-apps/api/event";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { isRegistered, register, unregister } from "@tauri-apps/plugin-global-shortcut";
+import { listen } from "@tauri-apps/api/event";
 import {
   Check,
   BookOpen,
@@ -21,9 +19,11 @@ import {
   Wifi,
   WifiOff
 } from "lucide-react";
-import type { AppSettings, AppStatus, DictationResult, HistoryEntry } from "./types";
+import type { AppSettings, AppStatus, DictationResult, HistoryEntry, StatusPayload } from "./types";
 import { DEFAULT_CLEANUP_PROMPT } from "./types";
 import { DictationShortcut } from "./shortcut";
+import { ShortcutInput } from "./ShortcutInput";
+import { displayShortcut } from "./shortcutCapture";
 
 const DEFAULT_SETTINGS: AppSettings = {
   shortcut: "Ctrl+Alt+Space",
@@ -48,9 +48,19 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 type Page = "home" | "history" | "settings" | "about";
 
+function sourceLabel(source?: string): string {
+  if (source?.startsWith("local:")) return `Local Whisper ${source.slice(6) === "base" ? "Base" : "Tiny"}`;
+  if (source === "mixed:remote+local") return "Remote + local fallback";
+  if (source === "remote:whisper-cpp") return "Your Whisper server";
+  if (source?.startsWith("remote:")) return "Remote transcription";
+  return "Source not recorded";
+}
+
+function seconds(milliseconds: number): string { return (milliseconds / 1000).toFixed(1); }
+
 function App() {
   const [page, setPage] = useState<Page>("home");
-  const [appVersion, setAppVersion] = useState("0.2.1");
+  const [appVersion, setAppVersion] = useState("0.2.2");
   const [status, setStatus] = useState<AppStatus>("idle");
   const [statusText, setStatusText] = useState("Ready to dictate");
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -58,6 +68,9 @@ function App() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [activeShortcut, setActiveShortcut] = useState(DEFAULT_SETTINGS.shortcut);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [latestResult, setLatestResult] = useState<DictationResult | null>(null);
+  const [commandPending, setCommandPending] = useState(false);
+  const [refreshingMicrophones, setRefreshingMicrophones] = useState(false);
   const [microphones, setMicrophones] = useState<string[]>([]);
   const [models, setModels] = useState<string[]>([]);
   const [baseInstalled, setBaseInstalled] = useState(false);
@@ -70,27 +83,33 @@ function App() {
   const [cleanupTestState, setCleanupTestState] = useState<"idle" | "testing" | "ok" | "error">("idle");
   const providerTestGeneration = useRef(0);
   const processing = useRef(false);
-  const idleTimer = useRef<number | undefined>(undefined);
   const statusRef = useRef<AppStatus>("idle");
   const startRecordingRef = useRef<() => Promise<void>>(async () => undefined);
   const stopAndProcessRef = useRef<() => Promise<void>>(async () => undefined);
-  const shortcutOperation = useRef<Promise<void>>(Promise.resolve());
-
-  useEffect(() => () => window.clearTimeout(idleTimer.current), []);
+  const settingsReady = useRef(false);
+  const statusRevision = useRef(-1);
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => undefined);
   }, []);
 
   useEffect(() => {
-    emit("dictation-status", { status, text: statusText }).catch(() => undefined);
-    WebviewWindow.getByLabel("overlay").then((overlay) => {
-      if (!overlay) return;
-      const isHotkeyActive = status === "listening" || status === "transcribing" || status === "cleaning";
-      if (isHotkeyActive) overlay.show();
-      else overlay.hide();
-    }).catch(() => undefined);
-  }, [status, statusText]);
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const apply = (next: StatusPayload) => {
+      if (disposed || next.revision < statusRevision.current) return;
+      statusRevision.current = next.revision;
+      statusRef.current = next.status;
+      setStatus(next.status);
+      setStatusText(next.text);
+    };
+    listen<StatusPayload>("dictation-status", (event) => apply(event.payload)).then(async (stop) => {
+      if (disposed) { stop(); return; }
+      unlisten = stop;
+      apply(await invoke<StatusPayload>("get_current_status"));
+    }).catch((error) => setMessage(`Status updates unavailable: ${String(error)}`));
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
 
   const refreshHistory = useCallback(async () => {
     setHistory(await invoke<HistoryEntry[]>("list_history"));
@@ -107,6 +126,7 @@ function App() {
       setSettings(displayedSettings);
       setSavedSettings(saved);
       savedSettingsRef.current = saved;
+      settingsReady.current = true;
       setActiveShortcut(saved.shortcut);
       setMicrophones(devices);
       setHistory(entries);
@@ -117,53 +137,33 @@ function App() {
   const stopAndProcess = useCallback(async () => {
     if (processing.current) return;
     processing.current = true;
+    setCommandPending(true);
     statusRef.current = "transcribing";
-    setStatus("transcribing");
-    setStatusText(settings.transcriptionMode === "local"
-      ? "Transcribing locally — this PC may take a moment…"
-      : settings.transcriptionMode === "remote"
-        ? "Transcribing with the configured server…"
-        : "Trying remote transcription…");
     try {
       const result = await invoke<DictationResult>("stop_and_process");
-      statusRef.current = "success";
-      if (result.warning) {
-        setStatus("success");
-        setStatusText(result.warning);
-      } else if (result.processingMode === "clean") {
-        setStatus("cleaning");
-        setStatusText("Text cleaned and pasted");
-      } else {
-        setStatus("success");
-        setStatusText("Text pasted");
-      }
+      setLatestResult(result);
+      if (result.warning) setMessage(result.warning);
       await refreshHistory();
-      idleTimer.current = window.setTimeout(() => {
-        statusRef.current = "idle";
-        setStatus("idle");
-        setStatusText("Ready to dictate");
-      }, 1600);
     } catch (error) {
-      statusRef.current = "error";
-      setStatus("error");
-      setStatusText(String(error));
+      setMessage(String(error));
     } finally {
       processing.current = false;
+      setCommandPending(false);
     }
-  }, [refreshHistory, settings.transcriptionMode]);
+  }, [refreshHistory]);
 
   const startRecording = useCallback(async () => {
-    if (processing.current || statusRef.current === "listening") return;
-    window.clearTimeout(idleTimer.current);
+    if (!settingsReady.current || processing.current || ["listening", "transcribing", "cleaning"].includes(statusRef.current)) return;
+    processing.current = true;
+    setCommandPending(true);
     try {
       await invoke("start_recording");
       statusRef.current = "listening";
-      setStatus("listening");
-      setStatusText("Listening…");
     } catch (error) {
-      setStatus("error");
-      statusRef.current = "error";
-      setStatusText(String(error));
+      setMessage(String(error));
+    } finally {
+      processing.current = false;
+      setCommandPending(false);
     }
   }, []);
 
@@ -172,34 +172,28 @@ function App() {
 
   useEffect(() => {
     let disposed = false;
-    const shortcut = activeShortcut.trim();
     const controller = new DictationShortcut({
       mode: () => savedSettingsRef.current.activationBehavior,
       listening: () => statusRef.current === "listening",
-      busy: () => processing.current,
+      busy: () => !settingsReady.current || processing.current,
       start: () => startRecordingRef.current(),
       stop: () => stopAndProcessRef.current(),
-      error: (error) => { setStatus("error"); setStatusText(String(error)); }
+      error: (error) => setMessage(String(error))
     });
-    shortcutOperation.current = shortcutOperation.current.then(async () => {
-      if (disposed || !shortcut) return;
-      if (await isRegistered(shortcut)) await unregister(shortcut);
-      if (disposed) return;
-      await register(shortcut, (event) => controller.handle(event.state));
-    }).catch((error) => {
-      setStatus("error");
-      setStatusText(`Shortcut unavailable: ${String(error)}`);
-    });
+    let unlisten: (() => void) | undefined;
+    listen<{ state: "Pressed" | "Released" }>("dictation-shortcut", (event) => {
+      if (!disposed) controller.handle(event.payload.state);
+    }).then((stop) => { if (disposed) stop(); else unlisten = stop; })
+      .catch((error) => setMessage(`Shortcut listener unavailable: ${String(error)}`));
     return () => {
       disposed = true;
       controller.dispose();
-      shortcutOperation.current = shortcutOperation.current.then(async () => {
-        if (shortcut && await isRegistered(shortcut)) await unregister(shortcut);
-      }).catch(() => undefined);
+      unlisten?.();
     };
-  }, [activeShortcut]);
+  }, []);
 
   const saveSettings = async () => {
+    if (processing.current || ["listening", "transcribing", "cleaning"].includes(statusRef.current)) return;
     const shortcut = settings.shortcut.trim();
     if (!shortcut) {
       setMessage("Enter a shortcut such as Ctrl+Alt+Space");
@@ -283,7 +277,7 @@ function App() {
 
   const installBaseModel = async () => {
     setInstallingBase(true);
-    setMessage("Downloading and verifying the multilingual Base modelâ€¦");
+    setMessage("Downloading and verifying the multilingual Base model…");
     try {
       await invoke("install_base_model");
       setBaseInstalled(true);
@@ -292,6 +286,18 @@ function App() {
       setMessage(`Base model installation failed: ${String(error)}`);
     } finally {
       setInstallingBase(false);
+    }
+  };
+
+  const refreshMicrophones = async () => {
+    setRefreshingMicrophones(true);
+    try {
+      setMicrophones(await invoke<string[]>("list_microphones"));
+      setMessage("Microphone list refreshed");
+    } catch (error) {
+      setMessage(`Microphones could not be refreshed: ${String(error)}`);
+    } finally {
+      setRefreshingMicrophones(false);
     }
   };
 
@@ -304,6 +310,9 @@ function App() {
     () => savedSettings !== null && JSON.stringify(settings) !== JSON.stringify(savedSettings),
     [savedSettings, settings]
   );
+  const dictationActive = commandPending || status === "listening" || status === "transcribing" || status === "cleaning";
+  const activeSettings = savedSettings ?? DEFAULT_SETTINGS;
+  const activeModeLabel = savedSettings === null ? "Loading settings…" : activeSettings.transcriptionMode === "local" ? "Local transcription" : activeSettings.transcriptionMode === "remote" ? "Remote transcription" : "Remote with local fallback";
 
   return (
     <div className="app-shell">
@@ -315,24 +324,24 @@ function App() {
           <button className={page === "settings" ? "active" : ""} onClick={() => setPage("settings")}><SettingsIcon size={18} /> Settings</button>
           <button className={page === "about" ? "active" : ""} onClick={() => setPage("about")}><CircleHelp size={18} /> Help &amp; About</button>
         </nav>
-        <div className="privacy-note"><Database size={16} /><span><strong>Local by default</strong><br />Audio is deleted after transcription.</span></div>
+        <div className="privacy-note"><Database size={16} /><span><strong>{activeModeLabel}</strong><br />Audio is deleted after transcription.</span></div>
       </aside>
 
       <main>
         {page === "home" && (
           <section className="home-page">
-            <div className={`orb ${status}`} onClick={() => status === "listening" ? stopAndProcess() : startRecording()}>
+            <button type="button" className={`orb ${status}`} disabled={commandPending || savedSettings === null || status === "transcribing" || status === "cleaning"} aria-label={status === "listening" ? "Finish dictation" : "Start dictation"} onClick={() => status === "listening" ? stopAndProcess() : startRecording()}>
               <Mic size={38} />
               {status === "listening" && <span className="pulse" />}
-            </div>
+            </button>
             <h1>{statusText}</h1>
-            <p className="muted">{savedSettings?.activationBehavior === "hold" ? <>Hold <kbd>{activeShortcut}</kbd> while speaking, then release.</> : <>Tap <kbd>{activeShortcut}</kbd> to start; tap again to stop.</>}</p>
+            <p className="muted">{savedSettings?.activationBehavior === "hold" ? <>Hold <kbd>{displayShortcut(activeShortcut)}</kbd> while speaking, then release.</> : <>Tap <kbd>{displayShortcut(activeShortcut)}</kbd> to start; tap again to stop.</>}</p>
             <div className="status-grid">
-              <article><span>Transcription</span><strong>{settings.transcriptionMode === "local" ? `Local Whisper ${settings.model === "tiny" ? "Tiny" : "Base"}` : settings.transcriptionMode === "remote" ? "Remote server" : "Automatic"}</strong><small>{settings.transcriptionMode === "local" ? "Audio stays on this PC" : settings.transcriptionMode === "remote" ? "Uses your configured server" : "Remote with local fallback"}</small></article>
-              <article><span>AI cleanup</span><strong>{settings.cleanupEnabled ? settings.provider : "Off"}</strong><small>{settings.cleanupEnabled ? settings.providerModel || "Choose a model" : "Raw transcript"}</small></article>
+              <article><span>Transcription</span><strong>{activeSettings.transcriptionMode === "local" ? `Local Whisper ${activeSettings.model === "tiny" ? "Tiny" : "Base"}` : activeSettings.transcriptionMode === "remote" ? "Remote server" : "Automatic"}</strong><small>{activeSettings.transcriptionMode === "local" ? "Audio stays on this PC" : activeSettings.transcriptionMode === "remote" ? "Uses your configured server" : "Remote with local fallback"}</small></article>
+              <article><span>AI cleanup</span><strong>{activeSettings.cleanupEnabled ? activeSettings.provider : "Off"}</strong><small>{activeSettings.cleanupEnabled ? activeSettings.providerModel || "Choose a model" : "Raw transcript"}</small></article>
               <article><span>History</span><strong>{history.length} entries</strong><small>Text only</small></article>
             </div>
-            {history[0] && <div className="latest"><div><Clock3 size={16} /> Latest dictation</div><p>{history[0].finalText}</p><button onClick={() => navigator.clipboard.writeText(history[0].finalText)}><Copy size={15} /> Copy</button></div>}
+            {history[0] && <div className="latest"><div><Clock3 size={16} /> Latest dictation</div><p>{history[0].finalText}</p><div className="result-meta">{sourceLabel(history[0].transcriptionSource)}{history[0].processingMs > 0 && <> · {seconds(history[0].processingMs)} sec processing</>}</div>{latestResult && latestResult.finalText === history[0].finalText && <details className="timing-details"><summary>Processing details</summary><p>Finish transcription: {seconds(latestResult.timings.finishMs)} sec · Cleanup: {seconds(latestResult.timings.cleanupMs)} sec · Paste: {seconds(latestResult.timings.pasteMs)} sec{latestResult.timings.cpuThreads > 0 && <> · {latestResult.timings.cpuThreads} CPU threads</>}{latestResult.timings.incrementalChunks > 0 && <> · {latestResult.timings.incrementalChunks} chunks processed while speaking</>}</p></details>}<button onClick={() => navigator.clipboard.writeText(history[0].finalText)}><Copy size={15} /> Copy</button></div>}
           </section>
         )}
 
@@ -341,7 +350,7 @@ function App() {
             <header className="page-header"><div><h1>History</h1><p>Your text stays on this PC.</p></div><button className="danger" onClick={async () => { await invoke("clear_history"); await refreshHistory(); }}><Trash2 size={16} /> Clear all</button></header>
             <label className="search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search dictations" /></label>
             <div className="history-list">
-              {visibleHistory.map((entry) => <article key={entry.id}><div className="history-meta"><span>{new Date(entry.createdAt).toLocaleString()}</span><span>{Math.round(entry.durationMs / 1000)} sec · {entry.processingMode}</span></div><p>{entry.finalText}</p><div className="row-actions"><button onClick={() => navigator.clipboard.writeText(entry.finalText)}><Copy size={15} /> Copy</button><button onClick={async () => { await invoke("delete_history", { id: entry.id }); await refreshHistory(); }}><Trash2 size={15} /> Delete</button></div></article>)}
+              {visibleHistory.map((entry) => <article key={entry.id}><div className="history-meta"><span>{new Date(entry.createdAt).toLocaleString()}</span><span>{Math.round(entry.durationMs / 1000)} sec recording · {entry.processingMode}</span></div><p>{entry.finalText}</p><div className="result-meta">{sourceLabel(entry.transcriptionSource)}{entry.processingMs > 0 && <> · {seconds(entry.processingMs)} sec processing</>}</div><div className="row-actions"><button onClick={() => navigator.clipboard.writeText(entry.finalText)}><Copy size={15} /> Copy</button><button onClick={async () => { await invoke("delete_history", { id: entry.id }); await refreshHistory(); }}><Trash2 size={15} /> Delete</button></div></article>)}
               {!visibleHistory.length && <div className="empty">No dictations found.</div>}
             </div>
           </section>
@@ -349,9 +358,9 @@ function App() {
 
         {page === "settings" && (
           <section>
-            <header className="page-header"><div><h1>Settings</h1><p>Choose where speech is transcribed and optionally clean the resulting text.</p></div><button className={`settings-save ${settingsHaveChanges ? "unsaved" : "saved"}`} onClick={saveSettings} disabled={savingSettings || savedSettings === null}><Check size={16} /> {savingSettings ? "Saving…" : settingsHaveChanges ? "Unsaved changes — Save" : "Saved"}</button></header>
-            <div className="settings-grid">
-              <div className="card"><h2>Dictation</h2><label>Global shortcut<input value={settings.shortcut} onChange={(event) => setSettings({ ...settings, shortcut: event.target.value })} /></label><label>Activation behavior<select value={settings.activationBehavior} onChange={(event) => setSettings({ ...settings, activationBehavior: event.target.value as AppSettings["activationBehavior"] })}><option value="toggle">Tap to start/stop</option><option value="hold">Hold to talk</option></select></label><label>Microphone<select value={settings.microphoneName ?? ""} onChange={(event) => setSettings({ ...settings, microphoneName: event.target.value || null })}><option value="">System default</option>{microphones.map((name) => <option key={name}>{name}</option>)}</select></label><div className="two-col"><label>Language<select value={settings.language} onChange={(event) => setSettings({ ...settings, language: event.target.value })}><option value="auto">Auto detect</option><option value="en">English</option><option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option></select></label><label>{settings.transcriptionMode === "automatic" ? "Local fallback model" : "Local speech model"}<select value={settings.model} onChange={(event) => setSettings({ ...settings, model: event.target.value as "tiny" | "base" })}><option value="tiny">Tiny (included)</option><option value="base" disabled={!baseInstalled}>Base {baseInstalled ? "(installed)" : "(download first)"}</option></select></label></div>{!baseInstalled && settings.transcriptionMode !== "remote" && <button className="secondary" disabled={installingBase} onClick={installBaseModel}><Sparkles size={16} /> {installingBase ? "Installing Base model…" : "Install optional Base model"}</button>}</div>
+            <header className="page-header"><div><h1>Settings</h1><p>Choose where speech is transcribed and optionally clean the resulting text.</p></div><button className={`settings-save ${settingsHaveChanges ? "unsaved" : "saved"}`} onClick={saveSettings} disabled={savingSettings || savedSettings === null || dictationActive}><Check size={16} /> {savingSettings ? "Saving…" : settingsHaveChanges ? "Unsaved changes — Save" : "Saved"}</button></header>
+            <fieldset className="settings-grid" disabled={dictationActive || savingSettings}>
+              <div className="card"><h2>Dictation</h2><ShortcutInput value={settings.shortcut} onChange={(shortcut) => setSettings((current) => ({ ...current, shortcut }))} disabled={dictationActive || savingSettings || savedSettings === null} /><label>Activation behavior<select value={settings.activationBehavior} onChange={(event) => setSettings({ ...settings, activationBehavior: event.target.value as AppSettings["activationBehavior"] })}><option value="toggle">Tap to start/stop</option><option value="hold">Hold to talk</option></select></label><label>Microphone<select value={settings.microphoneName ?? ""} onChange={(event) => setSettings({ ...settings, microphoneName: event.target.value || null })}><option value="">System default</option>{microphones.map((name) => <option key={name}>{name}</option>)}</select></label><button className="secondary microphone-refresh" disabled={refreshingMicrophones} onClick={refreshMicrophones}><RotateCcw size={15} className={refreshingMicrophones ? "spin" : ""} /> {refreshingMicrophones ? "Refreshing microphones…" : "Refresh microphones"}</button><div className="two-col"><label>Language<select value={settings.language} onChange={(event) => setSettings({ ...settings, language: event.target.value })}><option value="auto">Auto detect</option><option value="en">English</option><option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option></select></label><label>{settings.transcriptionMode === "automatic" ? "Local fallback model" : "Local speech model"}<select value={settings.model} onChange={(event) => setSettings({ ...settings, model: event.target.value as "tiny" | "base" })}><option value="tiny">Tiny (included)</option><option value="base" disabled={!baseInstalled}>Base {baseInstalled ? "(installed)" : "(download first)"}</option></select></label></div>{!baseInstalled && settings.transcriptionMode !== "remote" && <button className="secondary" disabled={installingBase} onClick={installBaseModel}><Sparkles size={16} /> {installingBase ? "Installing Base model…" : "Install optional Base model"}</button>}</div>
               <div className="card">
                 <h2>Transcription location</h2>
                 <label>Method<select value={settings.transcriptionMode} onChange={(event) => setSettings({ ...settings, transcriptionMode: event.target.value as AppSettings["transcriptionMode"] })}><option value="local">Local — free and private</option><option value="remote">My server or online provider</option><option value="automatic">Automatic — remote, then local fallback</option></select></label>
@@ -367,9 +376,8 @@ function App() {
                   {settings.transcriptionMode === "automatic" && <p className="privacy-warning safe">If the server cannot be reached, bundled local Whisper will be used automatically.</p>}
                 </>}
               </div>
-              <div className="card"><div className="toggle-row"><div><h2>AI cleanup</h2><p>Only transcript text is sent.</p></div><button className={`switch ${settings.cleanupEnabled ? "on" : ""}`} onClick={() => setSettings({ ...settings, cleanupEnabled: !settings.cleanupEnabled })}><span /></button></div><label>Provider<select value={settings.provider} onChange={(event) => setSettings({ ...settings, provider: event.target.value as AppSettings["provider"] })}><option value="none">None</option><option value="ollama">Ollama</option><option value="openai-compatible">OpenAI compatible</option></select></label><label>Base URL<input value={settings.providerBaseUrl} onChange={(event) => setSettings({ ...settings, providerBaseUrl: event.target.value })} /></label><label>Model<input list="provider-models" value={settings.providerModel} onChange={(event) => setSettings({ ...settings, providerModel: event.target.value })} /><datalist id="provider-models">{models.map((model) => <option key={model} value={model} />)}</datalist></label>{settings.provider === "openai-compatible" && <label>API key<input type="password" placeholder={settings.providerApiKeyConfigured ? "Saved securely" : "Optional for private servers"} onChange={(event) => invoke("set_provider_api_key", { apiKey: event.target.value })} /></label>}<button className="secondary" disabled={connectionState === "testing" || cleanupTestState === "testing" || settings.provider === "none"} onClick={testProvider}>{connectionState === "testing" ? <RotateCcw className="spin" size={16} /> : connectionState === "ok" ? <Wifi size={16} /> : connectionState === "error" ? <WifiOff size={16} /> : <Sparkles size={16} />} {connectionState === "ok" ? "Server reachable" : connectionState === "error" ? "Connection failed" : "Test connection"}</button><button className="secondary" disabled={cleanupTestState === "testing" || connectionState === "testing" || settings.provider === "none" || !settings.providerModel.trim()} onClick={testCleanup}>{cleanupTestState === "testing" ? "Testing cleanup…" : cleanupTestState === "ok" ? "Cleanup test passed" : "Test cleanup"}</button><p className="muted">Test cleanup sends a sample sentence to the selected model. Save settings before dictating.</p><label>Cleanup instructions<textarea rows={5} value={settings.cleanupPrompt} onChange={(event) => setSettings({ ...settings, cleanupPrompt: event.target.value })} /></label></div>
-            </div>
-            {message && <div className="toast">{message}</div>}
+              <div className="card"><div className="toggle-row"><div><h2>AI cleanup</h2><p>Only transcript text is sent.</p></div><button className={`switch ${settings.cleanupEnabled ? "on" : ""}`} onClick={() => setSettings({ ...settings, cleanupEnabled: !settings.cleanupEnabled })}><span /></button></div>{settings.cleanupEnabled && <><label>Provider<select value={settings.provider} onChange={(event) => setSettings({ ...settings, provider: event.target.value as AppSettings["provider"] })}><option value="none">None</option><option value="ollama">Ollama</option><option value="openai-compatible">OpenAI compatible</option></select></label><label>Base URL<input value={settings.providerBaseUrl} onChange={(event) => setSettings({ ...settings, providerBaseUrl: event.target.value })} /></label><label>Model<input list="provider-models" value={settings.providerModel} onChange={(event) => setSettings({ ...settings, providerModel: event.target.value })} /><datalist id="provider-models">{models.map((model) => <option key={model} value={model} />)}</datalist></label>{settings.provider === "openai-compatible" && <label>API key<input type="password" placeholder={settings.providerApiKeyConfigured ? "Saved securely" : "Optional for private servers"} onChange={(event) => invoke("set_provider_api_key", { apiKey: event.target.value })} /></label>}<button className="secondary" disabled={connectionState === "testing" || cleanupTestState === "testing" || settings.provider === "none"} onClick={testProvider}>{connectionState === "testing" ? <RotateCcw className="spin" size={16} /> : connectionState === "ok" ? <Wifi size={16} /> : connectionState === "error" ? <WifiOff size={16} /> : <Sparkles size={16} />} {connectionState === "ok" ? "Server reachable" : connectionState === "error" ? "Connection failed" : "Test connection"}</button><button className="secondary" disabled={cleanupTestState === "testing" || connectionState === "testing" || settings.provider === "none" || !settings.providerModel.trim()} onClick={testCleanup}>{cleanupTestState === "testing" ? "Testing cleanup…" : cleanupTestState === "ok" ? "Cleanup test passed" : "Test cleanup"}</button><p className="muted">Test cleanup sends a sample sentence to the selected model. Save settings before dictating.</p><label>Cleanup instructions<textarea rows={5} value={settings.cleanupPrompt} onChange={(event) => setSettings({ ...settings, cleanupPrompt: event.target.value })} /></label></>}</div>
+            </fieldset>
           </section>
         )}
 
@@ -393,9 +401,9 @@ function App() {
               </div>
               <p className="privacy-warning"><strong>Remote and online modes send microphone audio.</strong> Local mode does not. Never expose an unprotected Whisper or Ollama port directly to the public internet.</p>
             </div>
-            {message && <div className="toast">{message}</div>}
           </section>
         )}
+        {message && <div className="toast" role="status">{message}</div>}
       </main>
     </div>
   );

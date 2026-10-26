@@ -29,6 +29,7 @@ struct Request {
 struct Response {
     text: String,
     inference_ms: u64,
+    threads: i32,
     language: Option<String>,
     error: Option<String>,
 }
@@ -42,16 +43,17 @@ fn main() {
 
 fn run() -> Result<()> {
     let arguments = Arguments::parse();
+    let threads = select_threads(
+        arguments.threads,
+        std::thread::available_parallelism()
+            .map(|value| value.get())
+            .ok(),
+    )?;
     let context = WhisperContext::new_with_params(
         arguments.model.to_string_lossy().as_ref(),
         WhisperContextParameters::default(),
     )
     .context("Could not load the Whisper model")?;
-    let threads = arguments.threads.unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map(|value| value.get().min(4) as i32)
-            .unwrap_or(2)
-    });
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -63,6 +65,7 @@ fn run() -> Result<()> {
                         Err(error) => Response {
                             text: String::new(),
                             inference_ms: 0,
+                            threads,
                             language: None,
                             error: Some(format!("{error:#}")),
                         },
@@ -71,6 +74,7 @@ fn run() -> Result<()> {
                 Err(error) => Response {
                     text: String::new(),
                     inference_ms: 0,
+                    threads,
                     language: None,
                     error: Some(format!("Invalid worker request: {error}")),
                 },
@@ -82,6 +86,18 @@ fn run() -> Result<()> {
         stdout.flush()?;
     }
     Ok(())
+}
+
+fn select_threads(requested: Option<i32>, available: Option<usize>) -> Result<i32> {
+    match requested {
+        Some(value) if value <= 0 => bail!("--threads must be a positive number"),
+        Some(value) => Ok(value),
+        // Leave one logical CPU for recording, the UI and the rest of Windows.
+        // More than eight threads can hurt short CPU dictations through overhead.
+        None => Ok(available
+            .map(|value| value.saturating_sub(1).clamp(1, 8) as i32)
+            .unwrap_or(2)),
+    }
 }
 
 fn transcribe(
@@ -132,9 +148,45 @@ fn transcribe(
     Ok(Response {
         text: text.trim().to_string(),
         inference_ms: started.elapsed().as_millis() as u64,
+        threads,
         language,
         error: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn automatic_threads_reserve_one_cpu_and_cap_at_eight() {
+        for (available, expected) in [(1, 1), (2, 1), (4, 3), (8, 7), (12, 8), (32, 8)] {
+            assert_eq!(select_threads(None, Some(available)).unwrap(), expected);
+        }
+        assert_eq!(select_threads(None, None).unwrap(), 2);
+    }
+
+    #[test]
+    fn explicit_thread_count_is_honored_and_must_be_positive() {
+        assert_eq!(select_threads(Some(1), Some(32)).unwrap(), 1);
+        assert_eq!(select_threads(Some(16), Some(32)).unwrap(), 16);
+        assert!(select_threads(Some(0), Some(32)).is_err());
+        assert!(select_threads(Some(-1), Some(32)).is_err());
+    }
+
+    #[test]
+    fn response_reports_thread_count_and_camel_case_timing() {
+        let response = Response {
+            text: String::new(),
+            inference_ms: 42,
+            threads: 8,
+            language: None,
+            error: None,
+        };
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["threads"], 8);
+        assert_eq!(json["inferenceMs"], 42);
+    }
 }
 
 fn read_wav(path: &Path) -> Result<Vec<f32>> {
