@@ -60,7 +60,7 @@ function seconds(milliseconds: number): string { return (milliseconds / 1000).to
 
 function App() {
   const [page, setPage] = useState<Page>("home");
-  const [appVersion, setAppVersion] = useState("0.2.2");
+  const [appVersion, setAppVersion] = useState("0.2.3");
   const [status, setStatus] = useState<AppStatus>("idle");
   const [statusText, setStatusText] = useState("Ready to dictate");
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);

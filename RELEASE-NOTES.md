@@ -1,4 +1,12 @@
-# VoiceDictate 0.2.2 review build
+# VoiceDictate 0.2.3 startup hotfix
+
+- Fixes `state not managed` on `get_current_status` and other early startup commands. Tauri's automatic webview creation is deferred; settings, history, recorder and shortcut state are registered before either app window can request them.
+- Preserves configured window URLs, visibility, dimensions and overlay behavior. Startup regression tests cover both windows and intentionally manual windows.
+- Updates GitHub build actions to Node.js 24 runtimes (checkout/setup-node v5, upload-artifact v6 and pnpm/action-setup v5), with Node.js 24 for the frontend build. This warning was separate from the app startup error; no Node.js installation is needed on the dictation PC.
+
+Quit the old VoiceDictate from its tray menu before installing this replacement for 0.2.2. Existing settings and history are retained.
+
+## VoiceDictate 0.2.2 review build
 
 - Local transcription begins on completed speech passages during natural pauses, before recording stops. Final words remain in the last pass, cleanup runs once, and the complete result is pasted once. No server or account is required for Local mode.
 - Remote and Automatic modes can submit pause-delimited WAV passages while recording using the existing configured endpoints. After an Automatic-mode remote failure, remaining passages use local Whisper. This does not add a provider-specific real-time WebSocket protocol.

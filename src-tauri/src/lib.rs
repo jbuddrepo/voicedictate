@@ -4,6 +4,7 @@ mod hotkey;
 mod models;
 mod pipeline;
 mod provider;
+mod startup;
 mod storage;
 mod streaming;
 mod transcription;
@@ -788,9 +789,11 @@ pub fn run() {
             return;
         }
     };
+    let mut context = tauri::generate_context!();
+    let startup_windows = startup::defer_windows(context.config_mut());
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .setup(move |app| {
             let base = app.path().app_data_dir()?;
             fs::create_dir_all(&base)?;
             let (settings_path, history_path, temp_root) = storage::app_paths(base);
@@ -835,6 +838,11 @@ pub fn run() {
                 session: Mutex::new(None),
                 processing: Arc::new(AtomicBool::new(false)),
             });
+            // All commands' state, including the shortcut service, is managed
+            // before either renderer can load and make its first IPC request.
+            for window in &startup_windows {
+                tauri::WebviewWindowBuilder::from_config(app.handle(), window)?.build()?;
+            }
             if shortcut_reset {
                 terminal_status(
                     app.handle(),
@@ -897,6 +905,6 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("VoiceDictate failed to start");
 }

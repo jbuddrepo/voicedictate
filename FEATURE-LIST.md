@@ -4,6 +4,8 @@ The user authorized implementation of the recording/transcription, status-window
 
 ## Implemented for 0.2.2
 
+0.2.3 hotfix: defer framework-created windows until all app state is registered, fixing the work-PC `state not managed` startup error. Update the GitHub build actions to Node.js 24 runtimes. Target-PC verification of this hotfix remains necessary.
+
 - [x] Start recognition on completed passages during natural pauses while recording continues. Preserve continuous speech until a safe pause or final pass; finish the suffix, perform optional cleanup once, and paste the complete text once. Failed speculative passes do not advance the audio cursor. Cancellation cannot consume a newer recording or paste partial output.
 - [x] Keep Local mode offline by default. Remote/Automatic can submit pause-delimited WAV passages through their existing configured endpoints; Automatic switches remaining passages to local after a remote failure. No provider-specific real-time socket was added.
 - [x] Reduce unnecessary audio copying with metadata/count polling; expose source, processing timings, thread count and passages processed during speech.
