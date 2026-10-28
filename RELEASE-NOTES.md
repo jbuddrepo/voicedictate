@@ -1,4 +1,10 @@
-# VoiceDictate 0.2.4 beta
+# VoiceDictate 0.2.5 beta
+
+- Fix the dictation pop-up remaining visible: showing it through Windows directly left Tauri's internal visibility flag unchanged, so Tauri could skip the hide operation. Both directions now use the same Windows API. A native regression test checks repeated show/hide and verifies focus is preserved.
+- Clicking the tray icon now restores and focuses the main window, including when minimized. Right-click provides Open VoiceDictate, Settings and Quit; Settings opens the Settings page directly.
+- Retain all 0.2.4 features below. Quit the previous app from its tray menu before upgrading. Actual microphone, tray and monitor checks remain necessary on the work PC.
+
+## VoiceDictate 0.2.4 beta
 
 - Add personal vocabulary in Settings: preferred spellings, optional approved mishearings, and enable/edit/remove controls. Local Whisper receives bounded spelling hints. Whole-word/phrase corrections run locally on the final text, including after optional cleanup. Original recognition remains in history. Hints improve guidance but cannot guarantee recognition.
 - Keep the glossary on this PC. Remote audio transcription and optional cleanup requests do not include glossary lists or aliases. Cleanup still receives the original transcript, which may itself contain recognized job terms.

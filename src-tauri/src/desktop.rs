@@ -19,7 +19,8 @@ use windows::{
         System::Threading::{CreateMutexW, OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE},
         UI::WindowsAndMessaging::{
             FindWindowW, GetCursorPos, SetForegroundWindow, SetWindowPos, ShowWindowAsync,
-            HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE,
+            HWND_TOPMOST, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+            SW_RESTORE,
         },
     },
 };
@@ -234,29 +235,85 @@ pub fn show_status(app: &AppHandle, visible: bool) -> Result<()> {
     let overlay = app
         .get_webview_window("overlay")
         .ok_or_else(|| anyhow!("Status window is unavailable"))?;
-    if !visible {
-        overlay.hide()?;
-        return Ok(());
+    if visible {
+        position_overlay(app)?;
     }
-    position_overlay(app)?;
     // Show without taking keyboard focus from the application receiving dictation.
+    // Both directions must use native visibility: Tauri still considers this initially
+    // hidden window hidden after SetWindowPos shows it, making its hide() a no-op.
+    set_overlay_visibility(HWND(overlay.hwnd()?.0 as *mut _), visible)?;
+    Ok(())
+}
+
+fn set_overlay_visibility(window: HWND, visible: bool) -> windows::core::Result<()> {
     unsafe {
         SetWindowPos(
-            HWND(overlay.hwnd()?.0 as *mut _),
+            window,
             HWND_TOPMOST,
             0,
             0,
             0,
             0,
-            SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-        )?;
+            SWP_NOACTIVATE
+                | SWP_NOMOVE
+                | SWP_NOSIZE
+                | if visible {
+                    SWP_SHOWWINDOW
+                } else {
+                    SWP_HIDEWINDOW
+                },
+        )
     }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_overlay_show_and_hide_work_repeatedly_without_taking_focus() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, GetForegroundWindow, IsWindowVisible, WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW, WS_POPUP,
+        };
+        struct TestWindow(HWND);
+        impl Drop for TestWindow {
+            fn drop(&mut self) {
+                unsafe {
+                    let _ = DestroyWindow(self.0);
+                }
+            }
+        }
+        unsafe {
+            // An isolated, off-screen 1px test window; no microphone or user app is touched.
+            let window = TestWindow(
+                CreateWindowExW(
+                    WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                    w!("STATIC"),
+                    w!("VoiceDictate visibility regression"),
+                    WS_POPUP,
+                    -32000,
+                    -32000,
+                    1,
+                    1,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            );
+            let foreground = GetForegroundWindow();
+            assert!(!IsWindowVisible(window.0).as_bool());
+            for _ in 0..2 {
+                set_overlay_visibility(window.0, true).unwrap();
+                assert!(IsWindowVisible(window.0).as_bool());
+                set_overlay_visibility(window.0, false).unwrap();
+                assert!(!IsWindowVisible(window.0).as_bool());
+            }
+            assert_eq!(GetForegroundWindow(), foreground);
+        }
+    }
 
     #[test]
     fn saved_position_is_clamped_after_monitor_changes() {

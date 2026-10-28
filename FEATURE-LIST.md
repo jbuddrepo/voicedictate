@@ -26,6 +26,8 @@ The user authorized implementation of the recording/transcription, status-window
 
 ## Implemented for 0.2.4
 
+0.2.5 follow-up: pair native show and hide operations so the pop-up actually disappears despite Tauri's unchanged visibility cache. Add direct tray-click restore and an explicit Settings menu item. The near-clock tray icon remains available while the dictation pop-up hides.
+
 The user authorized these next-build features on October 28, 2026.
 
 - [x] **Pop-up lifetime.** Show while recording, then hide after 1.2 seconds. Transcription/cleanup can continue in the background; later terminal statuses do not reopen it.
