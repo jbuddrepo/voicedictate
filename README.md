@@ -2,24 +2,25 @@
 
 VoiceDictate is a free, open-source Windows dictation app. Press a shortcut, speak, and have Whisper transcription pasted into any application. Local transcription works without an account, subscription, word limit, telemetry, or required server. Users can optionally configure their own private or hosted transcription endpoint.
 
-## 0.2.3 startup hotfix
+## Current beta: 0.2.5
 
-Version 0.2.3 fixes an early-startup race that could report `state not managed` before settings/status were available. Both app windows now wait until shared state is registered. It includes the 0.2.2 improvements below.
+This build fixes the dictation pop-up staying visible and adds direct tray-click reopening. Right-click the icon near the Windows clock for Open VoiceDictate, Settings and Quit. The tray icon stays available while the smaller, movable dictation pop-up hides shortly after recording ends.
 
-## 0.2.2 source update
+Settings includes personal vocabulary: preferred spellings and optional approved mishearings. Local Whisper receives spelling hints, and whole-word/phrase corrections run locally after optional cleanup. Glossary lists and aliases stay on the PC. Recognition hints cannot guarantee spelling.
 
-The next beta processes completed passages during natural pauses while you are still speaking, then finishes the remaining audio and pastes the complete text once. Offline local transcription remains the default. Continuous speech is kept intact until a safe pause or the final pass; this is incremental transcription rather than a guarantee of instant text after release.
+Local transcription processes completed passages during natural pauses while you are still speaking, then finishes the remaining audio and pastes the complete text once. Offline local transcription remains the default. Continuous speech is kept intact until a safe pause or the final pass; this is incremental transcription rather than a guarantee of instant text after release.
 
-This update also adds press-to-select shortcuts (including Ctrl + Windows alone), single-instance protection, status-window placement on the cursor's display, actual transcription-source reporting, processing timings, and microphone refresh. Both CPU worker variants now explicitly optimize the native inference core for release builds. See [release notes](RELEASE-NOTES.md). The download links below continue to point to the previously published 0.2.1 beta until the new release is published.
+Includes press-to-select shortcuts (including Ctrl + Windows alone), single-instance protection, transcription-source reporting, processing timings, microphone refresh and the startup state-registration fix. See [release notes](RELEASE-NOTES.md).
+
 ## Download for Windows
 
-### [Download the VoiceDictate installer](https://github.com/jbuddrepo/voicedictate/releases/download/v0.2.1-beta.1/VoiceDictate-Setup-0.2.1.exe)
+### [Download the VoiceDictate 0.2.5 installer](https://github.com/jbuddrepo/voicedictate/releases/download/v0.2.5-beta.1/VoiceDictate-Setup-0.2.5.exe)
 
-### [Download the portable ZIP](https://github.com/jbuddrepo/voicedictate/releases/download/v0.2.1-beta.1/VoiceDictate-Portable-0.2.1.zip)
+### [Download the portable ZIP](https://github.com/jbuddrepo/voicedictate/releases/download/v0.2.5-beta.1/VoiceDictate-Portable-0.2.5.zip)
 
 The portable version does not need installation: extract the whole ZIP and run VoiceDictate. This is an unsigned beta, so Windows SmartScreen may show a warning. See the [releases page](https://github.com/jbuddrepo/voicedictate/releases) for checksums, release notes, and future versions.
 
-Version 0.2.1 adds explicit Tap/Hold shortcut modes, a short Hold release grace period, and improved cleanup diagnostics with a sample-response test. See [release notes](RELEASE-NOTES.md). Remote transcription, Automatic local fallback, and the persistent local worker remain available.
+Quit the old app through its tray menu before upgrading. Existing settings and history are retained. No separate Whisper installation is required.
 
 ## Guides
 
