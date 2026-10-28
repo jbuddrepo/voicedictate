@@ -2,12 +2,14 @@ mod audio;
 mod desktop;
 mod hotkey;
 mod models;
+mod overlay;
 mod pipeline;
 mod provider;
 mod startup;
 mod storage;
 mod streaming;
 mod transcription;
+mod vocabulary;
 mod windows_text;
 mod worker;
 
@@ -45,6 +47,7 @@ struct AppState {
     worker: Arc<Mutex<WorkerManager>>,
     session: Mutex<Option<pipeline::Session>>,
     status: Mutex<StatusPayload>,
+    visibility: Mutex<overlay::Visibility>,
     processing: Arc<AtomicBool>,
 }
 
@@ -59,13 +62,20 @@ fn present_status(app: &AppHandle) {
     let queued_app = app.clone();
     if let Err(error) = app.run_on_main_thread(move || {
         let state = queued_app.state::<AppState>();
-        let current = match state.status.lock() {
-            Ok(current) => current.clone(),
+        let (current, visible) = match state.status.lock() {
+            Ok(current) => (
+                current.clone(),
+                state
+                    .visibility
+                    .lock()
+                    .map(|v| v.is_visible())
+                    .unwrap_or(false),
+            ),
             Err(_) => return,
         };
         // No data mutex may be held across UI operations. Read the latest state
         // on the UI thread so an old idle task cannot hide a new recording.
-        if let Err(error) = desktop::show_status(&queued_app, &current.status) {
+        if let Err(error) = desktop::show_status(&queued_app, visible) {
             eprintln!("VoiceDictate status window failed: {error:#}");
         }
         if let Err(error) = queued_app.emit("dictation-status", current) {
@@ -83,15 +93,38 @@ fn publish_status(app: &AppHandle, status: &str, text: &str) -> Option<u64> {
         .lock()
         .map(|s| s.activation_behavior.clone())
         .unwrap_or_else(|_| "toggle".into());
-    let revision = if let Ok(mut current) = state.status.lock() {
+    let (revision, hide_token) = if let Ok(mut current) = state.status.lock() {
         current.status = status.into();
         current.text = text.into();
         current.activation_behavior = behavior;
         current.revision += 1;
-        Some(current.revision)
+        let hide_token = state
+            .visibility
+            .lock()
+            .ok()
+            .and_then(|mut v| v.update(status));
+        (Some(current.revision), hide_token)
     } else {
-        None
+        (None, None)
     };
+    if let Some(token) = hide_token {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = tauri::async_runtime::spawn_blocking(|| {
+                std::thread::sleep(std::time::Duration::from_millis(1200));
+            })
+            .await;
+            let changed = app
+                .state::<AppState>()
+                .visibility
+                .lock()
+                .map(|mut v| v.hide_if_current(token))
+                .unwrap_or(false);
+            if changed {
+                present_status(&app);
+            }
+        });
+    }
     present_status(app);
     revision
 }
@@ -114,6 +147,9 @@ fn terminal_status(app: &AppHandle, status: &str, text: &str) {
                 current.revision += 1;
                 current.status = "idle".into();
                 current.text = "Ready to dictate".into();
+                if let Ok(mut visibility) = state.visibility.lock() {
+                    visibility.update("idle");
+                }
                 true
             } else {
                 false
@@ -125,6 +161,15 @@ fn terminal_status(app: &AppHandle, status: &str, text: &str) {
             present_status(&app);
         }
     });
+}
+
+#[tauri::command]
+fn move_overlay(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() != "overlay" {
+        return Err("Only the dictation pop-up can be moved here".into());
+    }
+    app.state::<overlay::Placement>().begin_drag();
+    window.start_dragging().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -189,6 +234,7 @@ fn save_settings(
         return Err("Choose Tap to start/stop or Hold to talk".into());
     }
     hotkey::validate_shortcut(&settings.shortcut)?;
+    vocabulary::validate(&settings.personal_vocabulary)?;
     let lifecycle = state
         .session
         .lock()
@@ -285,6 +331,7 @@ fn begin_recording(app: &AppHandle, state: &AppState) -> Result<(), String> {
         .lock()
         .map_err(|_| "Settings are unavailable")?
         .clone();
+    vocabulary::validate(&settings.personal_vocabulary)?;
     let local_paths = if settings.transcription_mode == "remote" {
         None
     } else {
@@ -489,11 +536,13 @@ fn finish_transcription(
     if raw.is_empty() {
         return Err(anyhow!("No speech was detected"));
     }
+    let corrected = vocabulary::apply(&raw, &settings.personal_vocabulary);
     if settings.cleanup_enabled && settings.provider != "none" {
+        // Keep the glossary local: the cleanup provider receives only the original transcript.
         match provider::clean_text(settings, cleanup_key, &raw) {
             Ok(cleaned) => Ok(DictationResult {
                 raw_text: raw,
-                final_text: cleaned,
+                final_text: vocabulary::apply(&cleaned, &settings.personal_vocabulary),
                 duration_ms: 0,
                 processing_mode: "clean".into(),
                 warning: transcription_warning,
@@ -502,7 +551,7 @@ fn finish_transcription(
             }),
             Err(error) => Ok(DictationResult {
                 raw_text: raw.clone(),
-                final_text: raw,
+                final_text: corrected,
                 duration_ms: 0,
                 processing_mode: "clean-fallback".into(),
                 warning: Some(match transcription_warning {
@@ -518,7 +567,7 @@ fn finish_transcription(
     } else {
         Ok(DictationResult {
             raw_text: raw.clone(),
-            final_text: raw,
+            final_text: corrected,
             duration_ms: 0,
             processing_mode: "raw".into(),
             warning: transcription_warning,
@@ -531,6 +580,29 @@ fn finish_transcription(
 #[cfg(test)]
 mod cleanup_tests {
     use super::*;
+
+    #[test]
+    fn personal_vocabulary_corrects_output_and_preserves_original_history() {
+        let mut settings = AppSettings::default();
+        settings
+            .personal_vocabulary
+            .push(vocabulary::VocabularyEntry {
+                term: "AcmeCloud".into(),
+                mishearings: vec!["ack me cloud".into()],
+                enabled: true,
+            });
+        for cleanup_enabled in [false, true] {
+            settings.cleanup_enabled = cleanup_enabled;
+            settings.provider = "ollama".into();
+            settings.provider_model = "test".into();
+            settings.provider_base_url = "invalid-url".into();
+            let result =
+                finish_transcription("Use ack me cloud today.".into(), None, &settings, None)
+                    .unwrap();
+            assert_eq!(result.raw_text, "Use ack me cloud today.");
+            assert_eq!(result.final_text, "Use AcmeCloud today.");
+        }
+    }
 
     #[test]
     fn failed_cleanup_preserves_raw_transcript_and_fallback_warning() {
@@ -796,6 +868,7 @@ pub fn run() {
         .setup(move |app| {
             let base = app.path().app_data_dir()?;
             fs::create_dir_all(&base)?;
+            app.manage(overlay::Placement::load(base.join("overlay-position.json")));
             let (settings_path, history_path, temp_root) = storage::app_paths(base);
             let private_temp = desktop::PrivateTempDirectory::create(&temp_root)?;
             let temp_dir = private_temp.path().to_path_buf();
@@ -836,6 +909,7 @@ pub fn run() {
                 history: Mutex::new(history),
                 worker: Arc::new(Mutex::new(worker)),
                 session: Mutex::new(None),
+                visibility: Mutex::new(overlay::Visibility::default()),
                 processing: Arc::new(AtomicBool::new(false)),
             });
             // All commands' state, including the shortcut service, is managed
@@ -878,6 +952,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_settings,
             get_current_status,
+            move_overlay,
             hotkey::set_shortcut_capture,
             hotkey::validate_dictation_shortcut,
             save_settings,
@@ -898,6 +973,16 @@ pub fn run() {
             install_base_model
         ])
         .on_window_event(|window, event| {
+            if window.label() == "overlay" {
+                if let WindowEvent::Moved(position) = event {
+                    window.app_handle().state::<overlay::Placement>().remember(
+                        overlay::SavedPosition {
+                            x: position.x,
+                            y: position.y,
+                        },
+                    );
+                }
+            }
             if window.label() == "main" {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();

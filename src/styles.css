@@ -1,6 +1,7 @@
 :root { font-family: Inter, "Segoe UI", sans-serif; color: #f5f7fb; background: #0c0e12; font-synthesis: none; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 860px; min-height: 640px; overflow: hidden; }
+.overlay-document, .overlay-document body, .overlay-document #root { min-width:0; min-height:0; width:100%; height:100%; background:transparent; }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 .app-shell { display: grid; grid-template-columns: 230px 1fr; height: 100vh; background: radial-gradient(circle at 70% 0%, #202939 0, #11141a 36%, #0c0e12 72%); }
@@ -29,7 +30,12 @@ button.primary,button.secondary,button.danger,.latest button,.row-actions button
 .toast {position:fixed;right:26px;bottom:24px;padding:11px 14px;border-radius:9px;background:#272d38;border:1px solid #3b4350}.spin {animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
 @media(max-width:980px){.settings-grid{grid-template-columns:1fr}.status-grid,.about-grid,.guide-actions{grid-template-columns:1fr}.app-shell{grid-template-columns:200px}main{padding:28px}}
 
-.overlay-pill { width:100vw; height:100vh; padding:12px 14px; display:flex; align-items:center; gap:11px; color:#f8f9fc; background:rgba(18,21,28,.96); border:1px solid #3a414f; border-radius:16px; box-shadow:0 14px 44px #0008; overflow:hidden; }
+.overlay-pill { width:100vw; height:100vh; padding:7px 9px; display:flex; align-items:center; gap:7px; color:#f8f9fc; background:rgba(18,21,28,.96); border:1px solid #3a414f; border-radius:12px; overflow:hidden; cursor:grab; user-select:none; }
+.overlay-pill:active { cursor:grabbing; }
+.overlay-pill > div { min-width:0; }
+.overlay-pill .overlay-icon { width:28px; height:28px; flex-shrink:0; border-radius:8px; }
+.overlay-pill strong { font-size:11px !important; max-width:151px !important; }
+.overlay-pill small { font-size:9px !important; max-width:151px !important; }
 .overlay-pill.listening { border-color:#ef6682; }.overlay-pill.error { border-color:#e14d68; }.overlay-pill.transcribing,.overlay-pill.cleaning { border-color:#7567ec; }
 .overlay-icon {width:38px;height:38px;display:grid;place-items:center;border-radius:11px;background:#6758e6}.listening .overlay-icon,.error .overlay-icon{background:#d74765}.overlay-pill strong,.overlay-pill small{display:block;white-space:nowrap;max-width:165px;overflow:hidden;text-overflow:ellipsis}.overlay-pill strong{font-size:13px}.overlay-pill small{font-size:10px;color:#929baa;margin-top:3px}.level{display:flex;align-items:center;gap:2px;margin-left:auto;height:26px}.level i{display:block;width:3px;border-radius:4px;background:#ff7993;animation:meter .7s infinite alternate}.level i:nth-child(1){height:8px}.level i:nth-child(2){height:20px;animation-delay:.2s}.level i:nth-child(3){height:14px;animation-delay:.35s}.level i:nth-child(4){height:23px;animation-delay:.1s}@keyframes meter{to{height:5px}}
 

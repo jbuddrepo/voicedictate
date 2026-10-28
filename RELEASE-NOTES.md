@@ -1,4 +1,13 @@
-# VoiceDictate 0.2.3 startup hotfix
+# VoiceDictate 0.2.4 beta
+
+- Add personal vocabulary in Settings: preferred spellings, optional approved mishearings, and enable/edit/remove controls. Local Whisper receives bounded spelling hints. Whole-word/phrase corrections run locally on the final text, including after optional cleanup. Original recognition remains in history. Hints improve guidance but cannot guarantee recognition.
+- Keep the glossary on this PC. Remote audio transcription and optional cleanup requests do not include glossary lists or aliases. Cleanup still receives the original transcript, which may itself contain recognized job terms.
+- Reduce the dictation pop-up to 75% of its previous dimensions. Drag it to move; its saved position is kept inside the current monitor work area. It hides 1.2 seconds after recording ends, even while transcription continues, and later success/error messages do not bring it back.
+- Keep VoiceDictate accessible through the system tray near the Windows clock, without a persistent main taskbar button. Use the tray menu to Open or Quit.
+
+Includes the earlier startup, shortcut and offline processing fixes below. Quit the old app through its tray menu before installing. Existing settings and history are retained. Real microphone, multi-monitor/DPI, drag and work-PC checks remain necessary.
+
+## VoiceDictate 0.2.3 startup hotfix
 
 - Fixes `state not managed` on `get_current_status` and other early startup commands. Tauri's automatic webview creation is deferred; settings, history, recorder and shortcut state are registered before either app window can request them.
 - Preserves configured window URLs, visibility, dimensions and overlay behavior. Startup regression tests cover both windows and intentionally manual windows.

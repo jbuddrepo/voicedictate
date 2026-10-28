@@ -47,6 +47,8 @@ pub struct AppSettings {
     pub provider_api_key_configured: bool,
     pub cleanup_prompt: String,
     pub launch_at_startup: bool,
+    #[serde(default)]
+    pub personal_vocabulary: Vec<crate::vocabulary::VocabularyEntry>,
 }
 
 impl Default for AppSettings {
@@ -70,6 +72,7 @@ impl Default for AppSettings {
             provider_api_key_configured: false,
             cleanup_prompt: DEFAULT_CLEANUP_PROMPT.into(),
             launch_at_startup: false,
+            personal_vocabulary: Vec::new(),
         }
     }
 }
@@ -159,5 +162,6 @@ mod tests {
         assert_eq!(settings.activation_behavior, "toggle");
         assert_eq!(settings.transcription_provider, "whisper-cpp");
         assert_eq!(settings.transcription_timeout_seconds, 90);
+        assert!(settings.personal_vocabulary.is_empty());
     }
 }

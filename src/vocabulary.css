@@ -1,0 +1,15 @@
+.vocabulary-card { grid-column: 1 / -1; }
+.vocabulary-intro { color:#9ba3b1; font-size:13px; line-height:1.55; margin:-6px 0 18px; max-width:850px; }
+.vocabulary-list { display:grid; gap:12px; margin-bottom:16px; }
+.vocabulary-entry { min-width:0; padding:14px; border:1px solid #303642; border-radius:11px; background:#11151b; }
+.vocabulary-entry-heading { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+.card .vocabulary-enabled { display:flex; grid-template-columns:auto 1fr; align-items:center; gap:8px; margin:0; }
+.vocabulary-enabled input { width:16px; height:16px; accent-color:#7466ef; }
+.vocabulary-remove { display:inline-flex; align-items:center; gap:6px; border:0; padding:5px 7px; color:#ff9eb1; background:transparent; }
+.vocabulary-remove:hover { background:#2a171d; border-radius:7px; }
+.vocabulary-add { padding-top:16px; border-top:1px solid #2b313c; }
+.vocabulary-add-footer { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.card .vocabulary-add-footer small { flex:1; }
+.vocabulary-add-footer .secondary { width:auto; margin:0; }
+.vocabulary-error { margin:-6px 0 12px; color:#ff9eb1; font-size:12px; line-height:1.45; }
+.vocabulary-entry [aria-invalid="true"], .vocabulary-add [aria-invalid="true"] { border-color:#d94c68; }

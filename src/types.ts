@@ -4,6 +4,12 @@ export type ActivationBehavior = "toggle" | "hold";
 export type TranscriptionMode = "local" | "remote" | "automatic";
 export type TranscriptionProviderKind = "whisper-cpp" | "openai-compatible";
 
+export interface VocabularyEntry {
+  term: string;
+  mishearings: string[];
+  enabled: boolean;
+}
+
 export interface StatusPayload {
   status: AppStatus;
   text: string;
@@ -41,6 +47,7 @@ export interface AppSettings {
   providerApiKeyConfigured: boolean;
   cleanupPrompt: string;
   launchAtStartup: boolean;
+  personalVocabulary: VocabularyEntry[];
 }
 
 export interface HistoryEntry {

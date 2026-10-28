@@ -73,6 +73,7 @@ impl Recognizer {
     }
 
     fn local(&mut self, wav: &std::path::Path) -> Result<String> {
+        let initial_prompt = crate::vocabulary::hint_prompt(&self.settings.personal_vocabulary);
         let (worker, model) = self
             .local_paths
             .as_ref()
@@ -81,7 +82,7 @@ impl Recognizer {
             .worker
             .lock()
             .map_err(|_| anyhow!("The transcription worker is unavailable"))?
-            .transcribe(worker, model, wav, &self.settings.language)?;
+            .transcribe(worker, model, wav, &self.settings.language, &initial_prompt)?;
         self.inference_ms += response.inference_ms;
         self.threads = response.threads;
         Ok(response.text.trim().to_string())

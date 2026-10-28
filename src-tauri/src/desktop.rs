@@ -185,9 +185,17 @@ pub fn position_overlay(app: &AppHandle) -> Result<()> {
         .get_webview_window("overlay")
         .ok_or_else(|| anyhow!("Status window is unavailable"))?;
     let size = overlay.outer_size()?;
+    let saved = app.state::<crate::overlay::Placement>().position();
     let work = unsafe {
         let mut cursor = POINT::default();
-        GetCursorPos(&mut cursor).context("Could not locate the active display")?;
+        if let Some(position) = saved {
+            cursor = POINT {
+                x: position.x,
+                y: position.y,
+            };
+        } else {
+            GetCursorPos(&mut cursor).context("Could not locate the active display")?;
+        }
         let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
         let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
@@ -198,17 +206,35 @@ pub fn position_overlay(app: &AppHandle) -> Result<()> {
         }
         info.rcWork
     };
-    let (x, y) = overlay_coordinates(work, size.width, size.height);
+    let (x, y) = if let Some(position) = saved {
+        clamp_saved_position(work, size.width, size.height, position)
+    } else {
+        overlay_coordinates(work, size.width, size.height)
+    };
     overlay.set_position(PhysicalPosition::new(x, y))?;
     Ok(())
 }
 
-/// Keep terminal success/error feedback visible until the controller publishes idle.
-pub fn show_status(app: &AppHandle, status: &str) -> Result<()> {
+fn clamp_saved_position(
+    work: RECT,
+    width: u32,
+    height: u32,
+    position: crate::overlay::SavedPosition,
+) -> (i32, i32) {
+    let max_x = (i64::from(work.right) - i64::from(width)).max(i64::from(work.left));
+    let max_y = (i64::from(work.bottom) - i64::from(height)).max(i64::from(work.top));
+    (
+        i64::from(position.x).clamp(i64::from(work.left), max_x) as i32,
+        i64::from(position.y).clamp(i64::from(work.top), max_y) as i32,
+    )
+}
+
+/// Visibility is independent of ongoing transcription or cleanup.
+pub fn show_status(app: &AppHandle, visible: bool) -> Result<()> {
     let overlay = app
         .get_webview_window("overlay")
         .ok_or_else(|| anyhow!("Status window is unavailable"))?;
-    if status == "idle" {
+    if !visible {
         overlay.hide()?;
         return Ok(());
     }
@@ -231,6 +257,25 @@ pub fn show_status(app: &AppHandle, status: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_position_is_clamped_after_monitor_changes() {
+        let work = RECT {
+            left: -1000,
+            top: 0,
+            right: 0,
+            bottom: 800,
+        };
+        assert_eq!(
+            clamp_saved_position(
+                work,
+                210,
+                57,
+                crate::overlay::SavedPosition { x: 4000, y: -500 }
+            ),
+            (-210, 0)
+        );
+    }
 
     #[test]
     fn uses_negative_monitor_origin_and_taskbar_work_area() {

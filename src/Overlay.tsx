@@ -23,7 +23,9 @@ export default function Overlay() {
     return () => { disposed = true; unlisten?.(); };
   }, []);
   return (
-    <div className={`overlay-pill ${payload.status}`}>
+    <div className={`overlay-pill ${payload.status}`} title="Drag to move" onPointerDown={(event) => {
+      if (event.button === 0) void invoke("move_overlay").catch((error) => console.error("Could not move dictation pop-up", error));
+    }}>
       <span className="overlay-icon">{payload.status === "error" ? <TriangleAlert size={20} /> : payload.status === "cleaning" ? <Sparkles size={20} /> : <Mic size={20} />}</span>
       <div role="status" aria-live="polite"><strong title={payload.text}>{payload.text}</strong><small>{payload.status === "listening" ? payload.activationBehavior === "hold" ? "Release the shortcut to finish" : "Press the shortcut again to stop" : "VoiceDictate"}</small></div>
     </div>

@@ -24,6 +24,7 @@ import { DEFAULT_CLEANUP_PROMPT } from "./types";
 import { DictationShortcut } from "./shortcut";
 import { ShortcutInput } from "./ShortcutInput";
 import { displayShortcut } from "./shortcutCapture";
+import { VocabularyEditor, validateVocabulary } from "./VocabularyEditor";
 
 const DEFAULT_SETTINGS: AppSettings = {
   shortcut: "Ctrl+Alt+Space",
@@ -43,7 +44,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   providerModel: "",
   providerApiKeyConfigured: false,
   cleanupPrompt: DEFAULT_CLEANUP_PROMPT,
-  launchAtStartup: false
+  launchAtStartup: false,
+  personalVocabulary: []
 };
 
 type Page = "home" | "history" | "settings" | "about";
@@ -60,7 +62,7 @@ function seconds(milliseconds: number): string { return (milliseconds / 1000).to
 
 function App() {
   const [page, setPage] = useState<Page>("home");
-  const [appVersion, setAppVersion] = useState("0.2.3");
+  const [appVersion, setAppVersion] = useState("0.2.4");
   const [status, setStatus] = useState<AppStatus>("idle");
   const [statusText, setStatusText] = useState("Ready to dictate");
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -122,10 +124,11 @@ function App() {
       invoke<HistoryEntry[]>("list_history"),
       invoke<boolean>("is_base_model_installed")
     ]).then(([saved, devices, entries, installed]) => {
-      const displayedSettings = installed || saved.model !== "base" ? saved : { ...saved, model: "tiny" as const };
+      const compatibleSaved = { ...saved, personalVocabulary: saved.personalVocabulary ?? [] };
+      const displayedSettings = installed || compatibleSaved.model !== "base" ? compatibleSaved : { ...compatibleSaved, model: "tiny" as const };
       setSettings(displayedSettings);
-      setSavedSettings(saved);
-      savedSettingsRef.current = saved;
+      setSavedSettings(compatibleSaved);
+      savedSettingsRef.current = compatibleSaved;
       settingsReady.current = true;
       setActiveShortcut(saved.shortcut);
       setMicrophones(devices);
@@ -199,7 +202,20 @@ function App() {
       setMessage("Enter a shortcut such as Ctrl+Alt+Space");
       return;
     }
-    const savedSettings = { ...settings, shortcut };
+    const vocabularyError = validateVocabulary(settings.personalVocabulary);
+    if (vocabularyError) {
+      setMessage(vocabularyError);
+      return;
+    }
+    const savedSettings = {
+      ...settings,
+      shortcut,
+      personalVocabulary: settings.personalVocabulary.map((entry) => ({
+        ...entry,
+        term: entry.term.trim(),
+        mishearings: entry.mishearings.map((alias) => alias.trim())
+      }))
+    };
     setSavingSettings(true);
     try {
       await invoke("save_settings", { settings: savedSettings });
@@ -377,6 +393,7 @@ function App() {
                 </>}
               </div>
               <div className="card"><div className="toggle-row"><div><h2>AI cleanup</h2><p>Only transcript text is sent.</p></div><button className={`switch ${settings.cleanupEnabled ? "on" : ""}`} onClick={() => setSettings({ ...settings, cleanupEnabled: !settings.cleanupEnabled })}><span /></button></div>{settings.cleanupEnabled && <><label>Provider<select value={settings.provider} onChange={(event) => setSettings({ ...settings, provider: event.target.value as AppSettings["provider"] })}><option value="none">None</option><option value="ollama">Ollama</option><option value="openai-compatible">OpenAI compatible</option></select></label><label>Base URL<input value={settings.providerBaseUrl} onChange={(event) => setSettings({ ...settings, providerBaseUrl: event.target.value })} /></label><label>Model<input list="provider-models" value={settings.providerModel} onChange={(event) => setSettings({ ...settings, providerModel: event.target.value })} /><datalist id="provider-models">{models.map((model) => <option key={model} value={model} />)}</datalist></label>{settings.provider === "openai-compatible" && <label>API key<input type="password" placeholder={settings.providerApiKeyConfigured ? "Saved securely" : "Optional for private servers"} onChange={(event) => invoke("set_provider_api_key", { apiKey: event.target.value })} /></label>}<button className="secondary" disabled={connectionState === "testing" || cleanupTestState === "testing" || settings.provider === "none"} onClick={testProvider}>{connectionState === "testing" ? <RotateCcw className="spin" size={16} /> : connectionState === "ok" ? <Wifi size={16} /> : connectionState === "error" ? <WifiOff size={16} /> : <Sparkles size={16} />} {connectionState === "ok" ? "Server reachable" : connectionState === "error" ? "Connection failed" : "Test connection"}</button><button className="secondary" disabled={cleanupTestState === "testing" || connectionState === "testing" || settings.provider === "none" || !settings.providerModel.trim()} onClick={testCleanup}>{cleanupTestState === "testing" ? "Testing cleanup…" : cleanupTestState === "ok" ? "Cleanup test passed" : "Test cleanup"}</button><p className="muted">Test cleanup sends a sample sentence to the selected model. Save settings before dictating.</p><label>Cleanup instructions<textarea rows={5} value={settings.cleanupPrompt} onChange={(event) => setSettings({ ...settings, cleanupPrompt: event.target.value })} /></label></>}</div>
+              <VocabularyEditor entries={settings.personalVocabulary} onChange={(personalVocabulary) => setSettings((current) => ({ ...current, personalVocabulary }))} />
             </fieldset>
           </section>
         )}
@@ -385,6 +402,7 @@ function App() {
           <section>
             <header className="page-header"><div><h1>Help &amp; About</h1><p>VoiceDictate version {appVersion}</p></div></header>
             <div className="about-hero"><span className="brand-mark"><Mic size={24} /></span><div><h2>VoiceDictate {appVersion}</h2><p>Free, local-first Windows dictation with optional private or hosted transcription.</p></div></div>
+            <p className="muted">VoiceDictate stays in the system tray near the clock. Open or quit it from the tray icon; this build has no main taskbar icon.</p>
             <h2 className="section-title">Choose how transcription runs</h2>
             <div className="about-grid">
               <article><strong>Local Whisper</strong><p>Included and ready immediately. Audio stays on this Windows PC. No server, account, API key, internet connection, or usage fee is required.</p></article>

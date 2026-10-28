@@ -22,6 +22,8 @@ struct Arguments {
 struct Request {
     audio: PathBuf,
     language: String,
+    #[serde(default)]
+    initial_prompt: String,
 }
 
 #[derive(Serialize)]
@@ -60,7 +62,13 @@ fn run() -> Result<()> {
         let response = match line {
             Ok(line) => match serde_json::from_str::<Request>(&line) {
                 Ok(request) => {
-                    match transcribe(&context, &request.audio, &request.language, threads) {
+                    match transcribe(
+                        &context,
+                        &request.audio,
+                        &request.language,
+                        &request.initial_prompt,
+                        threads,
+                    ) {
                         Ok(response) => response,
                         Err(error) => Response {
                             text: String::new(),
@@ -104,8 +112,10 @@ fn transcribe(
     context: &WhisperContext,
     audio: &Path,
     language: &str,
+    initial_prompt: &str,
     threads: i32,
 ) -> Result<Response> {
+    validate_initial_prompt(initial_prompt)?;
     let samples = read_wav(audio)?;
     let started = Instant::now();
     let mut state = context
@@ -115,6 +125,9 @@ fn transcribe(
     params.set_n_threads(threads);
     params.set_translate(false);
     params.set_no_context(true);
+    if let Some(prompt) = nonempty_initial_prompt(initial_prompt) {
+        params.set_initial_prompt(prompt);
+    }
     // Whisper's default encoder window is 30 seconds. Matching it to short
     // dictations avoids doing a full 30-second pass on older CPUs.
     let audio_ctx =
@@ -154,6 +167,17 @@ fn transcribe(
     })
 }
 
+fn nonempty_initial_prompt(prompt: &str) -> Option<&str> {
+    (!prompt.is_empty()).then_some(prompt)
+}
+
+fn validate_initial_prompt(prompt: &str) -> Result<()> {
+    if prompt.contains('\0') {
+        bail!("Initial prompt cannot contain a NUL byte");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +210,47 @@ mod tests {
         let json = serde_json::to_value(response).unwrap();
         assert_eq!(json["threads"], 8);
         assert_eq!(json["inferenceMs"], 42);
+    }
+
+    #[test]
+    fn request_deserialization_defaults_prompt_for_legacy_json() {
+        let request: Request =
+            serde_json::from_str(r#"{"audio":"recording.wav","language":"en"}"#).unwrap();
+        assert_eq!(request.audio, PathBuf::from("recording.wav"));
+        assert_eq!(request.language, "en");
+        assert!(request.initial_prompt.is_empty());
+        assert_eq!(nonempty_initial_prompt(&request.initial_prompt), None);
+    }
+
+    #[test]
+    fn request_deserialization_accepts_empty_and_nonempty_camel_case_prompts() {
+        let empty: Request =
+            serde_json::from_str(r#"{"audio":"recording.wav","language":"en","initialPrompt":""}"#)
+                .unwrap();
+        assert_eq!(empty.initial_prompt, "");
+        assert_eq!(nonempty_initial_prompt(&empty.initial_prompt), None);
+
+        let prompted: Request = serde_json::from_str(
+            r#"{"audio":"recording.wav","language":"en","initialPrompt":"Voice Dictate"}"#,
+        )
+        .unwrap();
+        assert_eq!(prompted.initial_prompt, "Voice Dictate");
+        assert_eq!(
+            nonempty_initial_prompt(&prompted.initial_prompt),
+            Some("Voice Dictate")
+        );
+    }
+
+    #[test]
+    fn initial_prompt_rejects_nul_before_whisper_c_string_conversion() {
+        assert!(validate_initial_prompt("Voice Dictate").is_ok());
+        assert!(validate_initial_prompt("").is_ok());
+        assert_eq!(
+            validate_initial_prompt("Voice\0Dictate")
+                .unwrap_err()
+                .to_string(),
+            "Initial prompt cannot contain a NUL byte"
+        );
     }
 }
 

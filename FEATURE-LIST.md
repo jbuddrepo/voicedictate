@@ -24,6 +24,18 @@ The user authorized implementation of the recording/transcription, status-window
 - [ ] Verify the user's actual cleanup/transcription server and failure fallback. No live account/server configuration was changed for testing.
 - [ ] Fresh-PC installation and normal daily-use regression review before treating the beta as production-ready.
 
+## Implemented for 0.2.4
+
+The user authorized these next-build features on October 28, 2026.
+
+- [x] **Pop-up lifetime.** Show while recording, then hide after 1.2 seconds. Transcription/cleanup can continue in the background; later terminal statuses do not reopen it.
+- [x] **Movable pop-up.** Drag the pop-up to move it. Save the position locally and clamp it into a monitor work area after display changes.
+- [x] **Smaller pop-up.** Reduce dimensions from 280×76 to 210×57 (75%), with compact status text and a transparent overlay document.
+- [x] **System tray.** Keep Open and Quit near the Windows clock and omit the main window's taskbar button, including while the main window is open. Closing the main window continues to hide it.
+- [x] **Personal/job vocabulary.** Add/edit/remove/enable locally stored preferred spellings and explicit approved mishearings. Supply bounded hints only to local Whisper; correct complete words/phrases locally on the final result after optional cleanup. Preserve original recognition in history. Reject conflicting enabled rules. Remote requests do not include glossary lists or aliases; cleanup receives the original recognized transcript. Recognition hints cannot guarantee spelling and cleanup paraphrasing can still prevent an exact alias match.
+
+Target-PC validation: confirm drag, automatic hiding, saved position, monitor/DPI changes, tray access, and actual job vocabulary with short/long dictation. Local tests do not replace these checks.
+
 ## Later backlog
 
 - [ ] Functional Start with Windows UI/registration (currently only a saved model field).
