@@ -12,6 +12,7 @@ use cpal::{
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 pub struct ActiveRecording {
+    pub recording_id: u64,
     pub stream: Stream,
     pub samples: Arc<Mutex<Vec<f32>>>,
     pub sample_rate: u32,
@@ -26,13 +27,32 @@ pub struct CompletedRecording {
     pub target_window: isize,
 }
 
+/// A copy of captured audio. Taking a snapshot never stops the microphone or
+/// consumes samples: finalization can still fall back to the whole recording.
+pub struct RecordingSnapshot {
+    pub recording_id: u64,
+    pub samples: Vec<f32>,
+    pub duration_ms: u64,
+    pub target_window: isize,
+}
+
+/// Cheap polling information. Reading this never clones or resamples audio.
+#[derive(Clone, Copy, Debug)]
+pub struct RecordingMetadata {
+    pub recording_id: u64,
+    pub sample_count_16k: usize,
+}
+
 struct AudioRecorder {
     pub active: Option<ActiveRecording>,
+    generation: u64,
 }
 
 enum RecorderRequest {
     Start(Option<String>, mpsc::Sender<Result<(), String>>),
     Stop(mpsc::Sender<Result<CompletedRecording, String>>),
+    Snapshot(mpsc::Sender<Result<Option<RecordingSnapshot>, String>>),
+    Metadata(mpsc::Sender<Result<Option<RecordingMetadata>, String>>),
     Cancel,
 }
 
@@ -58,6 +78,14 @@ impl AudioController {
                         }
                         RecorderRequest::Stop(reply) => {
                             let _ = reply.send(recorder.stop().map_err(|error| error.to_string()));
+                        }
+                        RecorderRequest::Snapshot(reply) => {
+                            let _ =
+                                reply.send(recorder.snapshot().map_err(|error| error.to_string()));
+                        }
+                        RecorderRequest::Metadata(reply) => {
+                            let _ =
+                                reply.send(recorder.metadata().map_err(|error| error.to_string()));
                         }
                         RecorderRequest::Cancel => recorder.cancel(),
                     }
@@ -99,11 +127,36 @@ impl AudioController {
     pub fn cancel(&self) {
         let _ = self.requests.send(RecorderRequest::Cancel);
     }
+
+    pub fn snapshot(&self) -> Result<Option<RecordingSnapshot>> {
+        let (reply, response) = mpsc::channel();
+        self.requests
+            .send(RecorderRequest::Snapshot(reply))
+            .map_err(|_| anyhow!("The microphone controller stopped"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow!("The microphone controller did not respond"))?
+            .map_err(anyhow::Error::msg)
+    }
+
+    pub fn metadata(&self) -> Result<Option<RecordingMetadata>> {
+        let (reply, response) = mpsc::channel();
+        self.requests
+            .send(RecorderRequest::Metadata(reply))
+            .map_err(|_| anyhow!("The microphone controller stopped"))?;
+        response
+            .recv()
+            .map_err(|_| anyhow!("The microphone controller did not respond"))?
+            .map_err(anyhow::Error::msg)
+    }
 }
 
 impl AudioRecorder {
     pub fn new() -> Self {
-        Self { active: None }
+        Self {
+            active: None,
+            generation: 0,
+        }
     }
 
     pub fn list_devices() -> Result<Vec<String>> {
@@ -158,7 +211,9 @@ impl AudioRecorder {
         };
         stream.play()?;
         let target_window = unsafe { GetForegroundWindow().0 as isize };
+        self.generation = self.generation.wrapping_add(1);
         self.active = Some(ActiveRecording {
+            recording_id: self.generation,
             stream,
             samples,
             sample_rate,
@@ -208,6 +263,60 @@ impl AudioRecorder {
             duration_ms,
             target_window: active.target_window,
         })
+    }
+
+    fn metadata(&self) -> Result<Option<RecordingMetadata>> {
+        let Some(active) = self.active.as_ref() else {
+            return Ok(None);
+        };
+        if let Some(error) = active
+            .error
+            .lock()
+            .map_err(|_| anyhow!("Audio capture failed"))?
+            .clone()
+        {
+            return Err(anyhow!(
+                "The microphone disconnected or stopped responding: {error}"
+            ));
+        }
+        let sample_count = active
+            .samples
+            .lock()
+            .map_err(|_| anyhow!("Audio capture failed"))?
+            .len();
+        Ok(Some(RecordingMetadata {
+            recording_id: active.recording_id,
+            sample_count_16k: resampled_length(sample_count, active.sample_rate, 16_000),
+        }))
+    }
+
+    fn snapshot(&self) -> Result<Option<RecordingSnapshot>> {
+        let Some(active) = self.active.as_ref() else {
+            return Ok(None);
+        };
+        if let Some(error) = active
+            .error
+            .lock()
+            .map_err(|_| anyhow!("Audio capture failed"))?
+            .clone()
+        {
+            return Err(anyhow!(
+                "The microphone disconnected or stopped responding: {error}"
+            ));
+        }
+        // Release the callback's lock before resampling. The microphone can
+        // continue appending while the background transcription uses this copy.
+        let captured = active
+            .samples
+            .lock()
+            .map_err(|_| anyhow!("Audio capture failed"))?
+            .clone();
+        Ok(Some(RecordingSnapshot {
+            recording_id: active.recording_id,
+            samples: resample_linear(&captured, active.sample_rate, 16_000),
+            duration_ms: active.started.elapsed().as_millis() as u64,
+            target_window: active.target_window,
+        }))
     }
 
     pub fn cancel(&mut self) {
@@ -262,11 +371,21 @@ fn append_u16(data: &[u16], channels: usize, target: &Arc<Mutex<Vec<f32>>>) {
     }
 }
 
+fn resampled_length(samples: usize, source_rate: u32, target_rate: u32) -> usize {
+    if source_rate == 0 || target_rate == 0 {
+        return 0;
+    }
+    (samples as u64 * target_rate as u64 / source_rate as u64) as usize
+}
+
 fn resample_linear(input: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
+    if input.is_empty() || source_rate == 0 || target_rate == 0 {
+        return Vec::new();
+    }
     if source_rate == target_rate {
         return input.to_vec();
     }
-    let output_len = (input.len() as u64 * target_rate as u64 / source_rate as u64) as usize;
+    let output_len = resampled_length(input.len(), source_rate, target_rate);
     let ratio = source_rate as f64 / target_rate as f64;
     (0..output_len)
         .map(|index| {
@@ -301,5 +420,41 @@ mod tests {
     fn resamples_to_expected_length() {
         let source = vec![0.0; 48_000];
         assert_eq!(resample_linear(&source, 48_000, 16_000).len(), 16_000);
+    }
+
+    #[test]
+    fn empty_snapshot_can_be_resampled_before_first_callback() {
+        assert!(resample_linear(&[], 48_000, 16_000).is_empty());
+    }
+
+    #[test]
+    fn resampled_prefix_is_stable_as_capture_grows() {
+        let audio: Vec<f32> = (0..88_200).map(|n| (n as f32 * 0.01).sin()).collect();
+        let prefix = resample_linear(&audio[..44_100], 44_100, 16_000);
+        let whole = resample_linear(&audio, 44_100, 16_000);
+        assert_eq!(prefix, whole[..prefix.len()]);
+    }
+
+    #[test]
+    fn snapshots_before_start_and_after_cancel_do_not_open_microphone() {
+        let recorder = super::AudioController::new();
+        assert!(recorder.metadata().unwrap().is_none());
+        assert!(recorder.snapshot().unwrap().is_none());
+        recorder.cancel();
+        assert!(recorder.metadata().unwrap().is_none());
+        assert!(recorder.snapshot().unwrap().is_none());
+    }
+
+    #[test]
+    fn metadata_count_matches_resampler_output_for_common_rates_and_partial_frames() {
+        for rate in [8_000, 16_000, 44_100, 48_000, 96_000] {
+            for samples in [0, 1, 319, 1_001, 16_000, 52_801] {
+                let audio = vec![0.0; samples];
+                assert_eq!(
+                    super::resampled_length(samples, rate, 16_000),
+                    resample_linear(&audio, rate, 16_000).len()
+                );
+            }
+        }
     }
 }

@@ -6,9 +6,15 @@ VoiceDictate is local-first software and has no developer-operated backend.
 
 VoiceDictate stores user settings, text-only dictation history, and local diagnostic logs under the current Windows user's application-data directory. Logs exclude dictated content by default. History can be deleted entry-by-entry or cleared completely from the app.
 
+Version 0.2.4 also stores personal vocabulary and the manually chosen pop-up position locally. Enabled preferred terms are supplied only to the local Whisper worker as recognition hints. Glossary lists and mishearing aliases are not added to remote transcription or cleanup requests. Approved spelling corrections run locally on the final transcript after optional cleanup; history retains the original recognized text. As before, cleanup can receive job terms that already occur in the original transcript.
+
 ## Audio handling
 
 Audio is captured only after the configured shortcut is activated. A temporary mono WAV file is created and deleted after transcription, cancellation, or failure. Audio is not added to history. In Local mode it is read only by the isolated transcription worker. In Remote or Automatic mode it is sent to the transcription endpoint explicitly configured by the user. Automatic mode may read the same temporary file locally if the remote request fails.
+
+Version 0.2.2 can process pause-delimited passages while capture continues. Local mode keeps those passages on this PC. Remote and Automatic modes may send them to the configured endpoint before the shortcut is released; canceling does not retract already submitted audio. An in-flight blocking request or inference may finish after cancellation, but it cannot paste text or consume a later recording. Temporary passage files are removed when that work finishes. Instance-specific folders prevent a second launch from deleting an active recording; known orphaned audio is cleaned only when its owning process is confirmed stopped.
+
+The shortcut listener tracks held keys locally to recognize the configured combination. It does not log, persist, or transmit typed keys. Processing diagnostics contain timings, source labels, thread counts and passage counts rather than audio or dictated text. Text-only history continues to store the final and raw transcript as described above.
 
 ## Network behavior
 

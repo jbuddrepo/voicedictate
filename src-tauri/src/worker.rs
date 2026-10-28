@@ -16,6 +16,7 @@ use crate::models::WorkerResponse;
 struct WorkerRequest<'a> {
     audio: &'a Path,
     language: &'a str,
+    initial_prompt: &'a str,
 }
 
 struct WorkerProcess {
@@ -48,9 +49,10 @@ impl WorkerManager {
         model: &Path,
         audio: &Path,
         language: &str,
+        initial_prompt: &str,
     ) -> Result<WorkerResponse> {
         self.ensure_started(worker, model)?;
-        match self.request(audio, language) {
+        match self.request(audio, language, initial_prompt) {
             Ok(Ok(response)) => Ok(response),
             Ok(Err(error)) => Err(anyhow!("Local transcription failed: {error}")),
             Err(first_error) => {
@@ -58,7 +60,7 @@ impl WorkerManager {
                 // retry this recording once using the same temporary WAV.
                 self.stop();
                 self.ensure_started(worker, model)?;
-                match self.request(audio, language) {
+                match self.request(audio, language, initial_prompt) {
                     Ok(Ok(response)) => Ok(response),
                     Ok(Err(error)) => Err(anyhow!("Local transcription failed: {error}")),
                     Err(second_error) => Err(anyhow!(
@@ -138,7 +140,12 @@ impl WorkerManager {
     /// The outer result represents transport/process failure. The inner result
     /// represents a valid response containing either a transcript or a request
     /// error, which should not cause the healthy worker to restart.
-    fn request(&mut self, audio: &Path, language: &str) -> Result<Result<WorkerResponse, String>> {
+    fn request(
+        &mut self,
+        audio: &Path,
+        language: &str,
+        initial_prompt: &str,
+    ) -> Result<Result<WorkerResponse, String>> {
         let process = self
             .process
             .as_mut()
@@ -150,7 +157,11 @@ impl WorkerManager {
             ));
         }
 
-        let request = serde_json::to_string(&WorkerRequest { audio, language })?;
+        let request = serde_json::to_string(&WorkerRequest {
+            audio,
+            language,
+            initial_prompt,
+        })?;
         process
             .stdin
             .write_all(request.as_bytes())

@@ -57,7 +57,9 @@ The client sends a 16 kHz mono WAV, `response_format=json`, an optional language
 
 Public URLs must use HTTPS. Plain HTTP is limited to loopback, private IPv4/IPv6, link-local, and Tailscale CGNAT addresses. HTTP redirects are disabled so an approved private URL cannot silently redirect audio elsewhere.
 
-Automatic mode attempts the configured server once, then runs the existing isolated local worker if the request fails. The same temporary WAV is retained only for that attempt and is deleted on success, fallback, cancellation, or failure.
+Version 0.2.2 can submit completed pause-delimited passages during capture through these same multipart WAV endpoints. This overlaps work with speaking; it is not a separate provider-specific real-time protocol. Automatic mode switches remaining passages to the isolated local worker after the first server failure. A temporary passage WAV is retained only for its request/inference and deleted afterward. Cancellation stops further passages and prevents final paste; an already submitted blocking operation may finish before its temporary file can be removed.
+
+Both worker CMake hooks include `scripts/cmake/release-optimization.cmake`. This preserves CPU instruction gates and explicitly enables `/O2` and `NDEBUG` for MSVC Release/RelWithDebInfo configurations. Inspect generated compiler commands when changing build wrappers; a Rust release profile alone does not prove that the native C++ inference core is optimized.
 
 ## Build a native whisper.cpp server without Docker
 

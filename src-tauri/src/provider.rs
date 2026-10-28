@@ -201,6 +201,11 @@ mod tests {
             provider: "ollama".into(),
             provider_base_url: format!("  {url}/api/chat/  "),
             provider_model: "test-model".into(),
+            personal_vocabulary: vec![crate::vocabulary::VocabularyEntry {
+                term: "PrivateJobTerm".into(),
+                mishearings: vec!["private alias".into()],
+                enabled: true,
+            }],
             ..AppSettings::default()
         };
         assert_eq!(
@@ -211,6 +216,8 @@ mod tests {
         assert!(request.starts_with("POST /api/chat HTTP/1.1"));
         assert!(request.contains("\"stream\":false"));
         assert!(request.contains("test-model"));
+        assert!(!request.contains("PrivateJobTerm"));
+        assert!(!request.contains("private alias"));
     }
 
     #[test]

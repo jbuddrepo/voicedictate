@@ -1,40 +1,187 @@
 mod audio;
+mod desktop;
+mod hotkey;
 mod models;
+mod overlay;
+mod pipeline;
 mod provider;
+mod startup;
 mod storage;
+mod streaming;
 mod transcription;
+mod vocabulary;
 mod windows_text;
 mod worker;
 
 use std::{
     fs,
     io::{Read, Write},
-    path::{Path, PathBuf},
-    sync::Mutex,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::Instant,
 };
 
 use anyhow::{anyhow, Result};
-use audio::{write_wav, AudioController};
+use audio::AudioController;
 use keyring::Entry;
-use models::{AppSettings, DictationResult, HistoryEntry};
+use models::{AppSettings, DictationResult, HistoryEntry, ProcessingTimings, StatusPayload};
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, PhysicalPosition, State, WindowEvent,
+    AppHandle, Emitter, Manager, State, WindowEvent,
 };
 use tauri_plugin_opener::OpenerExt;
-use uuid::Uuid;
 use worker::WorkerManager;
 
 struct AppState {
     settings_path: PathBuf,
     temp_dir: PathBuf,
     settings: Mutex<AppSettings>,
-    recorder: Mutex<AudioController>,
+    recorder: Arc<Mutex<AudioController>>,
     history: Mutex<Connection>,
-    worker: Mutex<WorkerManager>,
+    worker: Arc<Mutex<WorkerManager>>,
+    session: Mutex<Option<pipeline::Session>>,
+    status: Mutex<StatusPayload>,
+    visibility: Mutex<overlay::Visibility>,
+    processing: Arc<AtomicBool>,
+}
+
+struct ProcessingGuard(Arc<AtomicBool>);
+impl Drop for ProcessingGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+fn present_status(app: &AppHandle) {
+    let queued_app = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        let state = queued_app.state::<AppState>();
+        let (current, visible) = match state.status.lock() {
+            Ok(current) => (
+                current.clone(),
+                state
+                    .visibility
+                    .lock()
+                    .map(|v| v.is_visible())
+                    .unwrap_or(false),
+            ),
+            Err(_) => return,
+        };
+        // No data mutex may be held across UI operations. Read the latest state
+        // on the UI thread so an old idle task cannot hide a new recording.
+        if let Err(error) = desktop::show_status(&queued_app, visible) {
+            eprintln!("VoiceDictate status window failed: {error:#}");
+        }
+        if let Err(error) = queued_app.emit("dictation-status", current) {
+            eprintln!("VoiceDictate could not deliver status: {error}");
+        }
+    }) {
+        eprintln!("VoiceDictate could not queue status: {error}");
+    }
+}
+
+fn publish_status(app: &AppHandle, status: &str, text: &str) -> Option<u64> {
+    let state = app.state::<AppState>();
+    let behavior = state
+        .settings
+        .lock()
+        .map(|s| s.activation_behavior.clone())
+        .unwrap_or_else(|_| "toggle".into());
+    let (revision, hide_token) = if let Ok(mut current) = state.status.lock() {
+        current.status = status.into();
+        current.text = text.into();
+        current.activation_behavior = behavior;
+        current.revision += 1;
+        let hide_token = state
+            .visibility
+            .lock()
+            .ok()
+            .and_then(|mut v| v.update(status));
+        (Some(current.revision), hide_token)
+    } else {
+        (None, None)
+    };
+    if let Some(token) = hide_token {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = tauri::async_runtime::spawn_blocking(|| {
+                std::thread::sleep(std::time::Duration::from_millis(1200));
+            })
+            .await;
+            let changed = app
+                .state::<AppState>()
+                .visibility
+                .lock()
+                .map(|mut v| v.hide_if_current(token))
+                .unwrap_or(false);
+            if changed {
+                present_status(&app);
+            }
+        });
+    }
+    present_status(app);
+    revision
+}
+
+fn terminal_status(app: &AppHandle, status: &str, text: &str) {
+    let Some(revision) = publish_status(app, status, text) else {
+        return;
+    };
+    let app = app.clone();
+    let delay = if status == "error" { 8 } else { 3 };
+    tauri::async_runtime::spawn(async move {
+        // Blocking sleep stays off the GUI and async runtime threads.
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            std::thread::sleep(std::time::Duration::from_secs(delay))
+        })
+        .await;
+        let state = app.state::<AppState>();
+        let changed = if let Ok(mut current) = state.status.lock() {
+            if current.revision == revision {
+                current.revision += 1;
+                current.status = "idle".into();
+                current.text = "Ready to dictate".into();
+                if let Ok(mut visibility) = state.visibility.lock() {
+                    visibility.update("idle");
+                }
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if changed {
+            present_status(&app);
+        }
+    });
+}
+
+#[tauri::command]
+fn move_overlay(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() != "overlay" {
+        return Err("Only the dictation pop-up can be moved here".into());
+    }
+    app.state::<overlay::Placement>().begin_drag();
+    window.start_dragging().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_current_status(app: AppHandle, state: State<'_, AppState>) -> Result<StatusPayload, String> {
+    let current = state
+        .status
+        .lock()
+        .map_err(|_| "Status is unavailable")?
+        .clone();
+    // Renderer ready/reload handshake: replay current state and recover visibility.
+    present_status(&app);
+    Ok(current)
 }
 
 struct TemporaryAudio(PathBuf);
@@ -78,15 +225,44 @@ fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
-fn save_settings(settings: AppSettings, state: State<'_, AppState>) -> Result<(), String> {
+fn save_settings(
+    settings: AppSettings,
+    state: State<'_, AppState>,
+    hotkey: State<'_, hotkey::HotkeyService>,
+) -> Result<(), String> {
     if !matches!(settings.activation_behavior.as_str(), "toggle" | "hold") {
         return Err("Choose Tap to start/stop or Hold to talk".into());
     }
-    storage::save_settings(&state.settings_path, &settings).map_err(|error| error.to_string())?;
-    *state
+    hotkey::validate_shortcut(&settings.shortcut)?;
+    vocabulary::validate(&settings.personal_vocabulary)?;
+    let lifecycle = state
+        .session
+        .lock()
+        .map_err(|_| "Recorder is unavailable")?;
+    if lifecycle.is_some() {
+        return Err("Finish dictating before saving settings".into());
+    }
+    if state.processing.load(Ordering::Acquire) {
+        return Err("Wait until dictation finishes before saving settings".into());
+    }
+    if !matches!(
+        settings.transcription_mode.as_str(),
+        "local" | "remote" | "automatic"
+    ) {
+        return Err("Choose a supported transcription method".into());
+    }
+    let mut current = state
         .settings
         .lock()
-        .map_err(|_| "Settings are unavailable")? = settings;
+        .map_err(|_| "Settings are unavailable")?;
+    hotkey.update(&settings.shortcut)?;
+    if let Err(error) = storage::save_settings(&state.settings_path, &settings) {
+        let _ = hotkey.update(&current.shortcut);
+        return Err(error.to_string());
+    }
+    *current = settings;
+    drop(current);
+    drop(lifecycle);
     Ok(())
 }
 
@@ -126,127 +302,229 @@ fn list_microphones() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn start_recording(state: State<'_, AppState>) -> Result<(), String> {
+async fn start_recording(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let result = begin_recording(&app, &state);
+        if let Err(error) = &result {
+            terminal_status(&app, "error", error);
+        }
+        result
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn begin_recording(app: &AppHandle, state: &AppState) -> Result<(), String> {
+    let mut session = state
+        .session
+        .lock()
+        .map_err(|_| "The recorder is unavailable")?;
+    if session.is_some() {
+        return Err("Recording is already active".into());
+    }
+    if state.processing.load(Ordering::Acquire) {
+        return Err("A dictation is still being processed".into());
+    }
     let settings = state
         .settings
         .lock()
         .map_err(|_| "Settings are unavailable")?
         .clone();
-    state
+    vocabulary::validate(&settings.personal_vocabulary)?;
+    let local_paths = if settings.transcription_mode == "remote" {
+        None
+    } else {
+        Some((
+            locate_worker(&app).map_err(|e| e.to_string())?,
+            locate_model(&app, &settings.model).map_err(|e| e.to_string())?,
+        ))
+    };
+    let recognizer = pipeline::Recognizer::new(
+        settings.clone(),
+        Arc::clone(&state.worker),
+        local_paths,
+        transcription_api_key(),
+        state.temp_dir.clone(),
+    );
+    let result = state
         .recorder
         .lock()
         .map_err(|_| "The recorder is unavailable")?
         .start(settings.microphone_name.as_deref())
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string());
+    result?;
+    match pipeline::Session::start(settings, Arc::clone(&state.recorder), recognizer) {
+        Ok(active) => {
+            *session = Some(active);
+            publish_status(app, "listening", "Listening…");
+            Ok(())
+        }
+        Err(error) => {
+            if let Ok(recorder) = state.recorder.lock() {
+                recorder.cancel();
+            }
+            Err(error.to_string())
+        }
+    }
 }
 
 #[tauri::command]
-fn cancel_recording(state: State<'_, AppState>) -> Result<(), String> {
+async fn cancel_recording(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || cancel_active_recording(&app))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn cancel_active_recording(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let mut session = state
+        .session
+        .lock()
+        .map_err(|_| "The recorder is unavailable")?;
+    if state.processing.load(Ordering::Acquire) {
+        return Err("Dictation is already being processed".into());
+    }
+    session.take();
     state
         .recorder
         .lock()
         .map_err(|_| "The recorder is unavailable")?
         .cancel();
+    drop(session);
+    publish_status(&app, "idle", "Ready to dictate");
     Ok(())
 }
 
 #[tauri::command]
-async fn stop_and_process(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<DictationResult, String> {
-    let recording = state
+async fn stop_and_process(app: AppHandle) -> Result<DictationResult, String> {
+    let result = finish_recording(&app).await;
+    if let Err(error) = &result {
+        terminal_status(&app, "error", error);
+    }
+    result
+}
+
+async fn finish_recording(app: &AppHandle) -> Result<DictationResult, String> {
+    let state = app.state::<AppState>();
+    let started = Instant::now();
+    state
+        .processing
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "A dictation is still being processed")?;
+    let _processing = ProcessingGuard(Arc::clone(&state.processing));
+    let mut session = state
+        .session
+        .lock()
+        .map_err(|_| "The recorder is unavailable")?
+        .take()
+        .ok_or_else(|| "No recording is active".to_string())?;
+    session.stop();
+    let settings = session.settings.clone();
+    let recording = match state
         .recorder
         .lock()
         .map_err(|_| "The recorder is unavailable")?
         .stop()
-        .map_err(|error| error.to_string())?;
-    fs::create_dir_all(&state.temp_dir).map_err(|error| error.to_string())?;
-    let wav_path = state.temp_dir.join(format!("{}.wav", Uuid::new_v4()));
-    let temporary_audio = TemporaryAudio(wav_path);
-    write_wav(&temporary_audio.0, &recording.samples).map_err(|error| error.to_string())?;
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|_| "Settings are unavailable")?
-        .clone();
-    let local_paths = if settings.transcription_mode == "remote" {
-        None
-    } else {
-        Some((
-            locate_worker(&app).map_err(|error| error.to_string())?,
-            locate_model(&app, &settings.model).map_err(|error| error.to_string())?,
-        ))
+        .map_err(|error| error.to_string())
+    {
+        Ok(recording) => recording,
+        Err(error) => {
+            terminal_status(&app, "error", &error);
+            return Err(error);
+        }
     };
+    let capture_ms = started.elapsed().as_millis() as u64;
+    publish_status(
+        &app,
+        "transcribing",
+        if settings.transcription_mode == "local" {
+            "Finishing local transcription…"
+        } else {
+            "Finishing transcription…"
+        },
+    );
     let cleanup_key = api_key();
-    let remote_key = transcription_api_key();
     let app_for_task = app.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        let state = app_for_task.state::<AppState>();
-        process_recording(
-            &state.worker,
-            local_paths
-                .as_ref()
-                .map(|(worker, model)| (worker.as_path(), model.as_path())),
-            &temporary_audio.0,
+    let target_window = recording.target_window;
+    let duration_ms = recording.duration_ms;
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<DictationResult> {
+        let finishing = Instant::now();
+        let (raw, progress) = session.finish(&recording.samples)?;
+        let finish_ms = finishing.elapsed().as_millis() as u64;
+        let cleanup = Instant::now();
+        if settings.cleanup_enabled && settings.provider != "none" {
+            publish_status(&app_for_task, "cleaning", "Cleaning up text…");
+        }
+        let mut result = finish_transcription(
+            raw,
+            progress.recognizer.warning,
             &settings,
             cleanup_key.as_deref(),
-            remote_key.as_deref(),
-        )
+        )?;
+        result.transcription_source = progress.recognizer.source;
+        result.timings = ProcessingTimings {
+            capture_ms,
+            finish_ms,
+            cleanup_ms: cleanup.elapsed().as_millis() as u64,
+            inference_ms: progress.recognizer.inference_ms,
+            incremental_chunks: progress.chunks,
+            cpu_threads: progress.recognizer.threads,
+            ..Default::default()
+        };
+        Ok(result)
     })
     .await
     .map_err(|error| error.to_string())?
-    .map_err(|error| error.to_string())?;
-    windows_text::paste_text(recording.target_window, &result.final_text)
-        .map_err(|error| error.to_string())?;
-    let history = state.history.lock().map_err(|_| "History is unavailable")?;
-    storage::add_history(
-        &history,
-        &result.raw_text,
-        &result.final_text,
-        recording.duration_ms,
-        &result.processing_mode,
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(DictationResult {
-        duration_ms: recording.duration_ms,
-        ..result
-    })
-}
-
-fn process_recording(
-    worker_manager: &Mutex<WorkerManager>,
-    local_paths: Option<(&Path, &Path)>,
-    wav: &Path,
-    settings: &AppSettings,
-    cleanup_key: Option<&str>,
-    remote_key: Option<&str>,
-) -> Result<DictationResult> {
-    let local_transcription = || -> Result<String> {
-        let (worker, model) = local_paths
-            .ok_or_else(|| anyhow!("Local Whisper is unavailable for automatic fallback"))?;
-        let response = worker_manager
-            .lock()
-            .map_err(|_| anyhow!("The transcription worker is unavailable"))?
-            .transcribe(worker, model, wav, &settings.language)?;
-        Ok(response.text.trim().to_string())
+    .map_err(|error| error.to_string());
+    let mut result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            terminal_status(&app, "error", &error);
+            return Err(error);
+        }
     };
-
-    let (raw, transcription_warning) = match settings.transcription_mode.as_str() {
-        "local" => (local_transcription()?, None),
-        "remote" => (transcription::transcribe(settings, remote_key, wav)?, None),
-        "automatic" => match transcription::transcribe(settings, remote_key, wav) {
-            Ok(text) => (text, None),
-            Err(error) => (
-                local_transcription()?,
-                Some(format!(
-                    "Remote transcription failed; local Whisper was used: {error}"
-                )),
-            ),
+    let paste = Instant::now();
+    if let Err(error) = windows_text::paste_text(target_window, &result.final_text) {
+        let error = error.to_string();
+        terminal_status(&app, "error", &error);
+        return Err(error);
+    }
+    result.timings.paste_ms = paste.elapsed().as_millis() as u64;
+    result.timings.release_to_text_ms = started.elapsed().as_millis() as u64;
+    let history_result = state
+        .history
+        .lock()
+        .map_err(|_| anyhow!("History is unavailable"))
+        .and_then(|history| {
+            storage::add_history(
+                &history,
+                &result.raw_text,
+                &result.final_text,
+                duration_ms,
+                &result.processing_mode,
+                &result.transcription_source,
+                result.timings.release_to_text_ms,
+            )
+        });
+    if let Err(error) = history_result {
+        let warning = format!("Text was pasted but could not be saved in history: {error}");
+        result.warning = Some(match result.warning {
+            Some(previous) => format!("{previous} {warning}"),
+            None => warning,
+        });
+    }
+    result.duration_ms = duration_ms;
+    terminal_status(
+        &app,
+        "success",
+        if result.warning.is_some() {
+            "Text pasted · see app for details"
+        } else {
+            "Text pasted"
         },
-        _ => return Err(anyhow!("The selected transcription mode is unsupported")),
-    };
-    finish_transcription(raw, transcription_warning, settings, cleanup_key)
+    );
+    Ok(result)
 }
 
 fn finish_transcription(
@@ -258,18 +536,22 @@ fn finish_transcription(
     if raw.is_empty() {
         return Err(anyhow!("No speech was detected"));
     }
+    let corrected = vocabulary::apply(&raw, &settings.personal_vocabulary);
     if settings.cleanup_enabled && settings.provider != "none" {
+        // Keep the glossary local: the cleanup provider receives only the original transcript.
         match provider::clean_text(settings, cleanup_key, &raw) {
             Ok(cleaned) => Ok(DictationResult {
                 raw_text: raw,
-                final_text: cleaned,
+                final_text: vocabulary::apply(&cleaned, &settings.personal_vocabulary),
                 duration_ms: 0,
                 processing_mode: "clean".into(),
                 warning: transcription_warning,
+                transcription_source: String::new(),
+                timings: ProcessingTimings::default(),
             }),
             Err(error) => Ok(DictationResult {
                 raw_text: raw.clone(),
-                final_text: raw,
+                final_text: corrected,
                 duration_ms: 0,
                 processing_mode: "clean-fallback".into(),
                 warning: Some(match transcription_warning {
@@ -278,15 +560,19 @@ fn finish_transcription(
                     }
                     None => format!("AI cleanup failed; raw text was pasted: {error}"),
                 }),
+                transcription_source: String::new(),
+                timings: ProcessingTimings::default(),
             }),
         }
     } else {
         Ok(DictationResult {
             raw_text: raw.clone(),
-            final_text: raw,
+            final_text: corrected,
             duration_ms: 0,
             processing_mode: "raw".into(),
             warning: transcription_warning,
+            transcription_source: String::new(),
+            timings: ProcessingTimings::default(),
         })
     }
 }
@@ -294,6 +580,29 @@ fn finish_transcription(
 #[cfg(test)]
 mod cleanup_tests {
     use super::*;
+
+    #[test]
+    fn personal_vocabulary_corrects_output_and_preserves_original_history() {
+        let mut settings = AppSettings::default();
+        settings
+            .personal_vocabulary
+            .push(vocabulary::VocabularyEntry {
+                term: "AcmeCloud".into(),
+                mishearings: vec!["ack me cloud".into()],
+                enabled: true,
+            });
+        for cleanup_enabled in [false, true] {
+            settings.cleanup_enabled = cleanup_enabled;
+            settings.provider = "ollama".into();
+            settings.provider_model = "test".into();
+            settings.provider_base_url = "invalid-url".into();
+            let result =
+                finish_transcription("Use ack me cloud today.".into(), None, &settings, None)
+                    .unwrap();
+            assert_eq!(result.raw_text, "Use ack me cloud today.");
+            assert_eq!(result.final_text, "Use AcmeCloud today.");
+        }
+    }
 
     #[test]
     fn failed_cleanup_preserves_raw_transcript_and_fallback_warning() {
@@ -544,18 +853,34 @@ fn locate_model(app: &AppHandle, model: &str) -> Result<PathBuf> {
 }
 
 pub fn run() {
+    let _instance = match desktop::acquire_instance() {
+        Ok(Some(guard)) => guard,
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!("VoiceDictate could not establish a single app instance: {error:#}");
+            return;
+        }
+    };
+    let mut context = tauri::generate_context!();
+    let startup_windows = startup::defer_windows(context.config_mut());
     tauri::Builder::default()
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .setup(move |app| {
             let base = app.path().app_data_dir()?;
             fs::create_dir_all(&base)?;
-            let (settings_path, history_path, temp_dir) = storage::app_paths(base);
-            if temp_dir.exists() {
-                fs::remove_dir_all(&temp_dir)?;
+            app.manage(overlay::Placement::load(base.join("overlay-position.json")));
+            let (settings_path, history_path, temp_root) = storage::app_paths(base);
+            let private_temp = desktop::PrivateTempDirectory::create(&temp_root)?;
+            let temp_dir = private_temp.path().to_path_buf();
+            app.manage(private_temp);
+            let mut settings = storage::load_settings(&settings_path);
+            let shortcut_reset = hotkey::validate_shortcut(&settings.shortcut).is_err();
+            if shortcut_reset {
+                settings.shortcut = AppSettings::default().shortcut;
             }
-            fs::create_dir_all(&temp_dir)?;
-            let settings = storage::load_settings(&settings_path);
+            let hotkey = hotkey::HotkeyService::start(app.handle(), &settings.shortcut)
+                .map_err(anyhow::Error::msg)?;
+            app.manage(hotkey);
             let history = storage::open_history(&history_path)?;
             let mut worker = WorkerManager::new();
             if settings.transcription_mode != "remote" {
@@ -573,24 +898,34 @@ pub fn run() {
             app.manage(AppState {
                 settings_path,
                 temp_dir,
+                status: Mutex::new(StatusPayload {
+                    status: "idle".into(),
+                    text: "Ready to dictate".into(),
+                    activation_behavior: settings.activation_behavior.clone(),
+                    revision: 0,
+                }),
                 settings: Mutex::new(settings),
-                recorder: Mutex::new(AudioController::new()),
+                recorder: Arc::new(Mutex::new(AudioController::new())),
                 history: Mutex::new(history),
-                worker: Mutex::new(worker),
+                worker: Arc::new(Mutex::new(worker)),
+                session: Mutex::new(None),
+                visibility: Mutex::new(overlay::Visibility::default()),
+                processing: Arc::new(AtomicBool::new(false)),
             });
-            if let Some(overlay) = app.get_webview_window("overlay") {
-                if let (Ok(Some(monitor)), Ok(window_size)) =
-                    (overlay.primary_monitor(), overlay.outer_size())
-                {
-                    let monitor_position = monitor.position();
-                    let monitor_size = monitor.size();
-                    let x = monitor_position.x
-                        + ((monitor_size.width.saturating_sub(window_size.width)) / 2) as i32;
-                    // Leave room for the Windows taskbar.
-                    let y = monitor_position.y
-                        + monitor_size.height.saturating_sub(window_size.height + 72) as i32;
-                    let _ = overlay.set_position(PhysicalPosition::new(x, y));
-                }
+            // All commands' state, including the shortcut service, is managed
+            // before either renderer can load and make its first IPC request.
+            for window in &startup_windows {
+                tauri::WebviewWindowBuilder::from_config(app.handle(), window)?.build()?;
+            }
+            if shortcut_reset {
+                terminal_status(
+                    app.handle(),
+                    "error",
+                    "Saved shortcut unsupported · using Ctrl + Alt + Space",
+                );
+            }
+            if let Err(error) = desktop::position_overlay(app.handle()) {
+                eprintln!("VoiceDictate could not position its status window: {error:#}");
             }
             let show = MenuItem::with_id(app, "show", "Open VoiceDictate", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -616,6 +951,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
+            get_current_status,
+            move_overlay,
+            hotkey::set_shortcut_capture,
+            hotkey::validate_dictation_shortcut,
             save_settings,
             set_provider_api_key,
             set_transcription_api_key,
@@ -634,6 +973,16 @@ pub fn run() {
             install_base_model
         ])
         .on_window_event(|window, event| {
+            if window.label() == "overlay" {
+                if let WindowEvent::Moved(position) = event {
+                    window.app_handle().state::<overlay::Placement>().remember(
+                        overlay::SavedPosition {
+                            x: position.x,
+                            y: position.y,
+                        },
+                    );
+                }
+            }
             if window.label() == "main" {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
@@ -641,6 +990,6 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("VoiceDictate failed to start");
 }

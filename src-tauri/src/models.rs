@@ -47,6 +47,8 @@ pub struct AppSettings {
     pub provider_api_key_configured: bool,
     pub cleanup_prompt: String,
     pub launch_at_startup: bool,
+    #[serde(default)]
+    pub personal_vocabulary: Vec<crate::vocabulary::VocabularyEntry>,
 }
 
 impl Default for AppSettings {
@@ -70,6 +72,7 @@ impl Default for AppSettings {
             provider_api_key_configured: false,
             cleanup_prompt: DEFAULT_CLEANUP_PROMPT.into(),
             launch_at_startup: false,
+            personal_vocabulary: Vec::new(),
         }
     }
 }
@@ -83,6 +86,30 @@ pub struct HistoryEntry {
     pub created_at: String,
     pub duration_ms: u64,
     pub processing_mode: String,
+    pub transcription_source: String,
+    pub processing_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessingTimings {
+    pub capture_ms: u64,
+    pub finish_ms: u64,
+    pub cleanup_ms: u64,
+    pub paste_ms: u64,
+    pub release_to_text_ms: u64,
+    pub inference_ms: u64,
+    pub incremental_chunks: usize,
+    pub cpu_threads: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusPayload {
+    pub status: String,
+    pub text: String,
+    pub activation_behavior: String,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,14 +120,19 @@ pub struct DictationResult {
     pub duration_ms: u64,
     pub processing_mode: String,
     pub warning: Option<String>,
+    #[serde(default)]
+    pub transcription_source: String,
+    #[serde(default)]
+    pub timings: ProcessingTimings,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerResponse {
     pub text: String,
-    #[serde(rename = "inferenceMs")]
-    pub _inference_ms: u64,
+    pub inference_ms: u64,
+    #[serde(default)]
+    pub threads: usize,
     #[serde(rename = "language")]
     pub _language: Option<String>,
     #[serde(default)]
@@ -130,5 +162,6 @@ mod tests {
         assert_eq!(settings.activation_behavior, "toggle");
         assert_eq!(settings.transcription_provider, "whisper-cpp");
         assert_eq!(settings.transcription_timeout_seconds, 90);
+        assert!(settings.personal_vocabulary.is_empty());
     }
 }
