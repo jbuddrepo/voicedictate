@@ -32,7 +32,7 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State, WindowEvent,
 };
 use tauri_plugin_opener::OpenerExt;
@@ -48,6 +48,7 @@ struct AppState {
     session: Mutex<Option<pipeline::Session>>,
     status: Mutex<StatusPayload>,
     visibility: Mutex<overlay::Visibility>,
+    settings_requested: AtomicBool,
     processing: Arc<AtomicBool>,
 }
 
@@ -170,6 +171,33 @@ fn move_overlay(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), Stri
     }
     app.state::<overlay::Placement>().begin_drag();
     window.start_dragging().map_err(|error| error.to_string())
+}
+
+fn open_main_window(app: &AppHandle, settings: bool) {
+    if settings {
+        app.state::<AppState>()
+            .settings_requested
+            .store(true, Ordering::Release);
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let result = window
+            .unminimize()
+            .and_then(|_| window.show())
+            .and_then(|_| window.set_focus());
+        if let Err(error) = result {
+            eprintln!("VoiceDictate could not open its main window: {error}");
+        }
+        if settings {
+            if let Err(error) = window.emit("open-settings", ()) {
+                eprintln!("VoiceDictate could not open Settings: {error}");
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn take_settings_request(state: State<'_, AppState>) -> bool {
+    state.settings_requested.swap(false, Ordering::AcqRel)
 }
 
 #[tauri::command]
@@ -910,6 +938,7 @@ pub fn run() {
                 worker: Arc::new(Mutex::new(worker)),
                 session: Mutex::new(None),
                 visibility: Mutex::new(overlay::Visibility::default()),
+                settings_requested: AtomicBool::new(false),
                 processing: Arc::new(AtomicBool::new(false)),
             });
             // All commands' state, including the shortcut service, is managed
@@ -928,18 +957,31 @@ pub fn run() {
                 eprintln!("VoiceDictate could not position its status window: {error:#}");
             }
             let show = MenuItem::with_id(app, "show", "Open VoiceDictate", true, None::<&str>)?;
+            let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &settings, &quit])?;
             let mut tray = TrayIconBuilder::new()
                 .menu(&menu)
                 .tooltip("VoiceDictate")
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    if matches!(
+                        event,
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } | TrayIconEvent::DoubleClick {
+                            button: MouseButton::Left,
+                            ..
                         }
+                    ) {
+                        open_main_window(tray.app_handle(), false);
                     }
+                })
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => open_main_window(app, false),
+                    "settings" => open_main_window(app, true),
                     "quit" => app.exit(0),
                     _ => {}
                 });
@@ -953,6 +995,7 @@ pub fn run() {
             get_settings,
             get_current_status,
             move_overlay,
+            take_settings_request,
             hotkey::set_shortcut_capture,
             hotkey::validate_dictation_shortcut,
             save_settings,

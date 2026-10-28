@@ -62,7 +62,7 @@ function seconds(milliseconds: number): string { return (milliseconds / 1000).to
 
 function App() {
   const [page, setPage] = useState<Page>("home");
-  const [appVersion, setAppVersion] = useState("0.2.4");
+  const [appVersion, setAppVersion] = useState("0.2.5");
   const [status, setStatus] = useState<AppStatus>("idle");
   const [statusText, setStatusText] = useState("Ready to dictate");
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -93,6 +93,22 @@ function App() {
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const apply = () => { if (!disposed) setPage("settings"); };
+    listen("open-settings", () => {
+      apply();
+      void invoke("take_settings_request").catch((error) => console.error("Could not acknowledge Settings request", error));
+    }).then(async (stop) => {
+      if (disposed) { stop(); return; }
+      unlisten = stop;
+      // Recover a tray request made before this renderer finished loading.
+      if (await invoke<boolean>("take_settings_request")) apply();
+    }).catch((error) => setMessage(`Could not listen for Settings requests: ${String(error)}`));
+    return () => { disposed = true; unlisten?.(); };
   }, []);
 
   useEffect(() => {
@@ -402,7 +418,7 @@ function App() {
           <section>
             <header className="page-header"><div><h1>Help &amp; About</h1><p>VoiceDictate version {appVersion}</p></div></header>
             <div className="about-hero"><span className="brand-mark"><Mic size={24} /></span><div><h2>VoiceDictate {appVersion}</h2><p>Free, local-first Windows dictation with optional private or hosted transcription.</p></div></div>
-            <p className="muted">VoiceDictate stays in the system tray near the clock. Open or quit it from the tray icon; this build has no main taskbar icon.</p>
+            <p className="muted">VoiceDictate stays in the system tray near the clock. Click the tray icon to reopen it, or right-click for Open, Settings and Quit. Closing the main window hides it; this build has no main taskbar icon.</p>
             <h2 className="section-title">Choose how transcription runs</h2>
             <div className="about-grid">
               <article><strong>Local Whisper</strong><p>Included and ready immediately. Audio stays on this Windows PC. No server, account, API key, internet connection, or usage fee is required.</p></article>
